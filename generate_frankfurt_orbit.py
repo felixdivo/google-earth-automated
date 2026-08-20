@@ -1,5 +1,5 @@
 """Generate a Google Earth Studio .esp project: a camera orbit around Frankfurt
-Hauptbahnhof, always facing it, ~200m away and ~60m above it. Rough demo numbers.
+Hauptbahnhof, always facing it, ~200m away and ~30m above it. Rough demo numbers.
 """
 
 from esp_builder import build_orbit_esp, destination_point, write_esp
@@ -10,7 +10,7 @@ HAUPTBAHNHOF_LON = 8.6633
 HAUPTBAHNHOF_GROUND_ALT_M = 115
 
 ORBIT_RADIUS_M = 200
-ORBIT_HEIGHT_M = 60
+ORBIT_HEIGHT_M = 30
 
 target = {
     "lat": HAUPTBAHNHOF_LAT,
