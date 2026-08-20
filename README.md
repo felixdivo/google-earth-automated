@@ -53,6 +53,9 @@ the automation is verified to work unattended.
 Earth Studio's UI is an undocumented, JS-heavy SPA, so `studio_render.py`'s
 selectors are best-effort and may need adjusting after the first live run — the
 Earth Studio interactions live in `src/earth_studio_browser.py` and the
-selector block at the top of `src/studio_render.py`. Headed browser automation
-also needs a display (X11/VNC forwarded into a container, or run natively on
-your host).
+selector block at the top of `src/studio_render.py`.
+
+The devcontainer runs as root and installs Chromium's runtime shared libs
+(libnss3, libatk1.0-0, ...) via `onCreateCommand` so `--headless` works out
+of the box. A headed run still needs a display (X11/VNC forwarded in, or run
+natively on the host) since the container has none.

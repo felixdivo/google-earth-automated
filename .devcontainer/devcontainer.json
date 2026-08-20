@@ -3,9 +3,8 @@
 {
   "name": "Python (uv)",
   "image": "ghcr.io/bare-devcontainer/uv:trixie",
-  "remoteUser": "dev",
-  "runArgs": ["--cap-drop=ALL"],
-  "securityOpt": ["no-new-privileges"],
+  "containerUser": "root",
+  "remoteUser": "root",
   "init": true,
   "containerEnv": {
     "UV_LINK_MODE": "copy"
@@ -13,10 +12,21 @@
   "mounts": [
     {
       "source": "${devcontainerId}-uv-cache",
-      "target": "/home/dev/.cache/uv",
+      "target": "/root/.cache/uv",
+      "type": "volume"
+    },
+    {
+      "source": "${devcontainerId}-claude-data",
+      "target": "/root/.claude",
       "type": "volume"
     }
   ],
+  "onCreateCommand": "apt-get update && apt-get install -y --no-install-recommends libglib2.0-0t64 libnspr4 libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libdbus-1-3 libcups2t64 libxcb1 libxkbcommon0 libasound2t64 libgbm1 libx11-6 libxext6 libcairo2 libpango-1.0-0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libatspi2.0-0t64",
+  // The claude-data volume starts empty on first mount (Docker only seeds a
+  // new volume from the image, not from a live container), so restore the
+  // one-time stash left in the (already-persistent) uv-cache volume the
+  // first time this fires.
+  "postCreateCommand": "if [ ! -e /root/.claude/projects ] && [ -d /root/.cache/uv/claude-backup ]; then cp -a /root/.cache/uv/claude-backup/. /root/.claude/; fi",
   "customizations": {
     "vscode": {
       "extensions": [
