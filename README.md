@@ -57,5 +57,9 @@ selector block at the top of `src/studio_render.py`.
 
 The devcontainer runs as root and installs Chromium's runtime shared libs
 (libnss3, libatk1.0-0, ...) via `onCreateCommand` so `--headless` works out
-of the box. A headed run still needs a display (X11/VNC forwarded in, or run
-natively on the host) since the container has none.
+of the box. For the headed `studio_login.py` step, the devcontainer also
+starts a virtual display + noVNC (`.devcontainer/start-vnc.sh`, run via
+`postStartCommand`) on port 6080 — once the container is up, open
+`http://localhost:6080/vnc.html` in a browser on your host to see and
+interact with the Chromium window. Running natively on your host works too,
+without any of this.
