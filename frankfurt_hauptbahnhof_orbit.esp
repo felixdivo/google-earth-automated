@@ -1,0 +1,334 @@
+{
+  "modelVersion": 17,
+  "settings": {
+    "name": "frankfurt_hauptbahnhof_orbit",
+    "frameRate": 30,
+    "dimensions": {
+      "width": 1920,
+      "height": 1080
+    },
+    "duration": 450,
+    "timeFormat": "frames"
+  },
+  "scenes": [
+    {
+      "animationModel": {
+        "roving": false,
+        "logarithmic": false,
+        "groupedPosition": true
+      },
+      "duration": 450,
+      "attributes": [
+        {
+          "type": "cameraGroup",
+          "inTimeline": true,
+          "attributes": [
+            {
+              "type": "cameraPositionGroup",
+              "inTimeline": true,
+              "attributes": [
+                {
+                  "type": "longitude",
+                  "value": {
+                    "relative": 0.5240647222222223,
+                    "minValueRange": -180.0,
+                    "maxValueRange": 180.0
+                  },
+                  "keyframes": [
+                    {
+                      "time": 0.0,
+                      "value": 0.5240647222222223
+                    },
+                    {
+                      "time": 0.3333333333333333,
+                      "value": 0.5240714685261847
+                    },
+                    {
+                      "time": 0.6666666666666666,
+                      "value": 0.5240579759182598
+                    },
+                    {
+                      "time": 1.0,
+                      "value": 0.5240647222222223
+                    }
+                  ],
+                  "inTimeline": true
+                },
+                {
+                  "type": "latitude",
+                  "value": {
+                    "relative": 0.7783822146845102,
+                    "minValueRange": -90.0,
+                    "maxValueRange": 90.0
+                  },
+                  "keyframes": [
+                    {
+                      "time": 0.0,
+                      "value": 0.7783822146845102
+                    },
+                    {
+                      "time": 0.3333333333333333,
+                      "value": 0.77836722585036
+                    },
+                    {
+                      "time": 0.6666666666666666,
+                      "value": 0.77836722585036
+                    },
+                    {
+                      "time": 1.0,
+                      "value": 0.7783822146845102
+                    }
+                  ],
+                  "inTimeline": true
+                },
+                {
+                  "type": "altitude",
+                  "value": {
+                    "relative": 1.0365800499865006e-05,
+                    "minValueRange": -500.0,
+                    "maxValueRange": 65117481.0,
+                    "logarithmic": false
+                  },
+                  "keyframes": [
+                    {
+                      "time": 0.0,
+                      "value": 1.0365800499865006e-05
+                    },
+                    {
+                      "time": 0.3333333333333333,
+                      "value": 1.0365800499865006e-05
+                    },
+                    {
+                      "time": 0.6666666666666666,
+                      "value": 1.0365800499865006e-05
+                    },
+                    {
+                      "time": 1.0,
+                      "value": 1.0365800499865006e-05
+                    }
+                  ],
+                  "inTimeline": true
+                }
+              ]
+            },
+            {
+              "type": "cameraTargetEffect",
+              "attributes": [
+                {
+                  "type": "enabled",
+                  "value": {
+                    "relative": 1
+                  }
+                },
+                {
+                  "type": "poi",
+                  "attributes": [
+                    {
+                      "type": "longitudePOI",
+                      "value": {
+                        "relative": 0.5240647222222222,
+                        "minValueRange": -180.0,
+                        "maxValueRange": 180.0
+                      }
+                    },
+                    {
+                      "type": "latitudePOI",
+                      "value": {
+                        "relative": 0.7783722222222222,
+                        "minValueRange": -90.0,
+                        "maxValueRange": 90.0
+                      }
+                    },
+                    {
+                      "type": "altitudePOI",
+                      "value": {
+                        "relative": 9.444396010988118e-06,
+                        "minValueRange": -500.0,
+                        "maxValueRange": 65117481.0,
+                        "logarithmic": false
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "influence",
+                  "value": {
+                    "relative": 1
+                  }
+                }
+              ]
+            },
+            {
+              "type": "cameraRotationGroup",
+              "inTimeline": true,
+              "attributes": [
+                {
+                  "type": "rotationX",
+                  "value": {
+                    "relative": 0.0,
+                    "minValueRange": 180.00000000101616,
+                    "maxValueRange": 540.0000000010161
+                  },
+                  "keyframes": [
+                    {
+                      "time": 0.0,
+                      "value": 0.0
+                    },
+                    {
+                      "time": 0.3333333333333333,
+                      "value": 0.33333850935444354
+                    },
+                    {
+                      "time": 0.6666666666666666,
+                      "value": 0.6666614906403144
+                    },
+                    {
+                      "time": 1.0,
+                      "value": 1.0
+                    }
+                  ],
+                  "inTimeline": true
+                },
+                {
+                  "type": "rotationY",
+                  "value": {
+                    "relative": 0.40722642092213146,
+                    "minValueRange": 0.0,
+                    "maxValueRange": 180.0
+                  },
+                  "keyframes": [
+                    {
+                      "time": 0.0,
+                      "value": 0.40722642092213146
+                    },
+                    {
+                      "time": 0.3333333333333333,
+                      "value": 0.4072264209222498
+                    },
+                    {
+                      "time": 0.6666666666666666,
+                      "value": 0.4072264209226343
+                    },
+                    {
+                      "time": 1.0,
+                      "value": 0.40722642092213146
+                    }
+                  ],
+                  "inTimeline": true
+                },
+                {
+                  "type": "rotationZ",
+                  "value": {
+                    "relative": 0
+                  }
+                }
+              ]
+            },
+            {
+              "type": "cameraLensGroup",
+              "attributes": [
+                {
+                  "type": "fov",
+                  "value": {}
+                },
+                {
+                  "type": "exposure",
+                  "value": {}
+                },
+                {
+                  "type": "aperture",
+                  "value": {}
+                },
+                {
+                  "type": "minFocusLength",
+                  "value": {}
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "environmentGroup",
+          "attributes": [
+            {
+              "type": "sunGroup",
+              "attributes": [
+                {
+                  "type": "sunVisibility",
+                  "value": {}
+                },
+                {
+                  "type": "worldTime",
+                  "value": {
+                    "relative": 0.5
+                  }
+                }
+              ]
+            },
+            {
+              "type": "cloudGroup",
+              "attributes": [
+                {
+                  "type": "cloudVisibility",
+                  "value": {}
+                },
+                {
+                  "type": "cloudopacity",
+                  "value": {}
+                },
+                {
+                  "type": "cloudheight",
+                  "value": {}
+                },
+                {
+                  "type": "clouddate",
+                  "value": {
+                    "relative": 0.9545454545454546
+                  }
+                }
+              ]
+            },
+            {
+              "type": "starsPlanetsGroup",
+              "attributes": [
+                {
+                  "type": "starsEnabled",
+                  "value": {}
+                }
+              ]
+            },
+            {
+              "type": "seawaterGroup",
+              "attributes": [
+                {
+                  "type": "seawater",
+                  "value": {}
+                },
+                {
+                  "type": "influence",
+                  "value": {
+                    "relative": 1
+                  }
+                }
+              ]
+            },
+            {
+              "type": "buildingsEnabled",
+              "value": {}
+            }
+          ]
+        }
+      ],
+      "cameraExport": {
+        "logarithmic": false,
+        "modelVersion": 2
+      }
+    }
+  ],
+  "playbackManager": {
+    "range": {
+      "start": 0,
+      "end": 450
+    }
+  }
+}
