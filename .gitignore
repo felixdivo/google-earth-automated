@@ -222,3 +222,6 @@ __marimo__/
 # Custom
 # Generated Earth Studio project files
 *.esp
+
+# Playwright's persistent Earth Studio login profile (live Google session data)
+.auth/
