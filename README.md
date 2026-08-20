@@ -27,10 +27,11 @@ project, triggering its built-in Render panel as an Image Sequence (PNG), and
 extracting the resulting frames. Turning that sequence into a video is a
 separate, later step, not covered here.
 
-One-time setup:
+One-time setup (the devcontainer already runs `playwright install chromium`
+via `onCreateCommand`; run it yourself first if you're not using the
+devcontainer):
 
 ```
-uv run playwright install chromium
 uv run src/studio_login.py
 ```
 

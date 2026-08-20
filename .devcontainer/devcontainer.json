@@ -21,7 +21,7 @@
       "type": "volume"
     }
   ],
-  "onCreateCommand": "apt-get update && apt-get install -y --no-install-recommends libglib2.0-0t64 libnspr4 libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libdbus-1-3 libcups2t64 libxcb1 libxkbcommon0 libasound2t64 libgbm1 libx11-6 libxext6 libcairo2 libpango-1.0-0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libatspi2.0-0t64 xvfb x11vnc novnc websockify",
+  "onCreateCommand": "apt-get update && apt-get install -y --no-install-recommends libglib2.0-0t64 libnspr4 libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libdbus-1-3 libcups2t64 libxcb1 libxkbcommon0 libasound2t64 libgbm1 libx11-6 libxext6 libcairo2 libpango-1.0-0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libatspi2.0-0t64 xvfb x11vnc novnc websockify && uv run playwright install chromium",
   // The claude-data volume starts empty on first mount (Docker only seeds a
   // new volume from the image, not from a live container), so restore the
   // one-time stash left in the (already-persistent) uv-cache volume the
