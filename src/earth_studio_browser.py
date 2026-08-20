@@ -20,7 +20,25 @@ EARTH_STUDIO_URL = "https://earth.google.com/studio"
 def launch_context(playwright: Playwright, *, headless: bool = False) -> BrowserContext:
     """Launch (or reattach to) the persistent Earth Studio browser profile."""
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-    return playwright.chromium.launch_persistent_context(PROFILE_DIR, headless=headless)
+    # Chromium's singleton lock embeds the container hostname, which changes
+    # on every devcontainer rebuild -- so a stale lock from a previous run
+    # (e.g. the container being stopped without Chromium exiting cleanly)
+    # always looks like another machine holds the profile. This profile is
+    # only ever driven by one process at a time here, so it's safe to clear.
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        (PROFILE_DIR / name).unlink(missing_ok=True)
+    return playwright.chromium.launch_persistent_context(
+        PROFILE_DIR,
+        headless=headless,
+        # Google's sign-in flow detects the --enable-automation flag/infobar
+        # Playwright adds by default and blocks login with "This browser or
+        # app may not be secure." Hiding it gets past that check. (Real
+        # Chrome, which is even less likely to get flagged, isn't an option:
+        # Google doesn't ship Chrome for Linux ARM64, which this devcontainer
+        # runs on.)
+        args=["--disable-blink-features=AutomationControlled"],
+        ignore_default_args=["--enable-automation"],
+    )
 
 
 def first_page(context: BrowserContext) -> Page:
