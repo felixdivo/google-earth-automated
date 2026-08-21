@@ -142,7 +142,7 @@ def build_orbit_esp(
 
     pan_range = (min(headings), max(headings)) if min(headings) != max(headings) else (headings[0] - 0.5, headings[0] + 0.5)
 
-    duration_frames = int(round((n - 1) * seconds_per_leg * frame_rate))
+    duration_frames = round((n - 1) * seconds_per_leg * frame_rate)
 
     camera_position_group = {
         "type": "cameraPositionGroup",

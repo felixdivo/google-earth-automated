@@ -10,8 +10,9 @@ in that window, then come back to the terminal and press Enter -- the session
 is saved to disk and reused by studio_render.py.
 """
 
-from earth_studio_browser import EARTH_STUDIO_URL, first_page, launch_context
 from playwright.sync_api import sync_playwright
+
+from earth_studio_browser import EARTH_STUDIO_URL, first_page, launch_context
 
 
 def main() -> None:
