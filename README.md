@@ -74,6 +74,41 @@ starts a virtual display + noVNC (`.devcontainer/start-vnc.sh`, run via
 interact with the Chromium window. Running natively on your host works too,
 without any of this.
 
+## GPU acceleration
+
+Rendering runs entirely in software by default — Chromium falls back to
+SwiftShader because the devcontainer requests no GPU device. That's
+deliberate: a hardcoded GPU device path that doesn't exist on the host would
+fail to start the container outright, and `devcontainer.json` is shared
+across whatever host you're on. The tradeoff is that renders are noticeably
+slower here than the same project open in a real, GPU-accelerated browser on
+your host.
+
+Whether you can get real hardware acceleration instead depends on the host:
+
+- **Windows (Docker Desktop, WSL2 backend)** — possible. WSL2 exposes the
+  host GPU through `/dev/dxg` and Mesa's `d3d12` driver, which translates
+  OpenGL/Vulkan calls into DirectX 12 run by the Windows GPU driver (works
+  for NVIDIA/AMD/Intel alike, not vendor-locked). To try it, merge this into
+  the existing `runArgs`/`mounts`/`containerEnv` entries in
+  `devcontainer.json`:
+  ```json
+  "runArgs": ["--device=/dev/dxg"],
+  "mounts": [
+    {"source": "/usr/lib/wsl/lib", "target": "/usr/lib/wsl/lib", "type": "bind"}
+  ],
+  "containerEnv": {"LD_LIBRARY_PATH": "/usr/lib/wsl/lib"}
+  ```
+  Untested from this project's (Mac-based) development environment — verify
+  it actually engages hardware rendering before relying on it, e.g. by
+  checking that Chromium's process list no longer includes
+  `--enable-unsafe-swiftshader`.
+- **Mac (Docker Desktop, any chip)** — not possible today. Docker Desktop's
+  VM uses `Hypervisor.framework`, which Apple gives no GPU passthrough or
+  virtualization through at all.
+- **Native Linux Docker host** — add `--device=/dev/dri` to `runArgs` to pass
+  the host's render node straight through; no translation layer needed.
+
 ## Security
 
 The devcontainer trades away several isolation defaults to make this
