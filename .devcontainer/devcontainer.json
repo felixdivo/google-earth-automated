@@ -6,6 +6,13 @@
   "containerUser": "root",
   "remoteUser": "root",
   "init": true,
+  // /dev/fuse + CAP_SYS_ADMIN: Earth Studio's local Image Sequence render asks
+  // for an output folder via the File System Access API, which Chromium
+  // confirms through xdg-desktop-portal's Documents portal -- that portal
+  // FUSE-mounts an export dir to hand the chosen path back, and without a real
+  // FUSE device + the capability to mount it, that confirmation hangs forever
+  // (see the Security section in README.md for the tradeoff this accepts).
+  "runArgs": ["--device=/dev/fuse", "--cap-add=SYS_ADMIN"],
   "containerEnv": {
     "UV_LINK_MODE": "copy"
   },
