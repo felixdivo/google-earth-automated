@@ -42,11 +42,11 @@ IMPORT_TOGGLE = "div.split-button:has(button[data-action='click:openProject']) b
 IMPORT_MENU_ITEM = "div[data-action='click:importProject']"
 RENDER_BUTTON = "text=Render"
 FORMAT_IMAGE_SEQUENCE_OPTION = "text=Image sequence (.jpeg)"
-CHOOSE_FOLDER_BUTTON = "button:has-text('Choose folder')"
+CHOOSE_FOLDER_BUTTON = "#output-dir-btn"  # reads "Choose folder" only the first time; a remembered destination replaces the label with its name
 START_RENDER_BUTTON = "button[data-action='click:onStartClick']"
 # -----------------------------------------------------------------------------
 
-RENDER_TIMEOUT_MS = 30 * 60 * 1000  # in-browser rendering can take a while
+RENDER_TIMEOUT_MS = 3 * 60 * 60 * 1000  # SwiftShader software rendering (no real GPU here) is slow -- give it room
 
 PROJECT_LOAD_WAIT_MS = 8000  # importing a project re-renders the whole scene
 
@@ -56,28 +56,37 @@ def _xdotool(*args: str) -> str:
     return result.stdout.strip()
 
 
-def _window_ids() -> set[str]:
-    return set(_xdotool("search", "--name", ".").splitlines())
+DIALOG_TITLE_PATTERN = "Select a folder"
+
+
+def _find_window(name_pattern: str, *, timeout_s: float) -> str | None:
+    deadline = time.monotonic() + timeout_s
+    wid = None
+    while time.monotonic() < deadline:
+        matches = _xdotool("search", "--name", name_pattern).splitlines()
+        if matches:
+            wid = matches[-1]  # most recently mapped match
+            break
+        time.sleep(0.3)
+    return wid
 
 
 def select_output_folder(page: Page, output_dir: Path, *, dialog_timeout_s: float = 10.0) -> None:
     """Drive the native GTK folder picker Earth Studio opens for the render
     destination. This is an OS-level dialog, not a page element, so it's
     automated with xdotool rather than Playwright.
+
+    Matched by window *title*, not by diffing the window list before/after --
+    opening the dialog also spawns extra untitled xdg-desktop-portal-gtk
+    helper windows, and diffing isn't guaranteed to pick the actual dialog
+    over one of those (sending input to the wrong one looks identical to the
+    dialog just silently not responding).
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    before = _window_ids()
     page.click(CHOOSE_FOLDER_BUTTON)
 
-    deadline = time.monotonic() + dialog_timeout_s
-    wid = None
-    while time.monotonic() < deadline:
-        new = _window_ids() - before
-        if new:
-            wid = min(new)
-            break
-        time.sleep(0.3)
+    wid = _find_window(DIALOG_TITLE_PATTERN, timeout_s=dialog_timeout_s)
     if wid is None:
         raise RuntimeError("folder picker dialog never appeared -- check the D-Bus/portal/WM stack is running")
 
@@ -89,6 +98,15 @@ def select_output_folder(page: Page, output_dir: Path, *, dialog_timeout_s: floa
     time.sleep(0.3)
     _xdotool("key", "--window", wid, "Return")
     time.sleep(1.0)
+
+    # Navigating via the location-bar entry usually recreates the dialog as a
+    # new X window (the old wid becomes a BadWindow) -- re-resolve it by
+    # title. But if the typed path was unambiguous, GTK sometimes confirms
+    # the pick outright instead and no window reappears at all -- that's
+    # success too, not a failure.
+    wid = _find_window(DIALOG_TITLE_PATTERN, timeout_s=3.0)
+    if wid is None:
+        return
 
     geometry = dict(line.split("=", 1) for line in _xdotool("getwindowgeometry", "--shell", wid).splitlines() if "=" in line)
     x, y, width, height = (int(geometry[k]) for k in ("X", "Y", "WIDTH", "HEIGHT"))
@@ -102,7 +120,7 @@ def select_output_folder(page: Page, output_dir: Path, *, dialog_timeout_s: floa
 
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
-        if wid not in _window_ids():
+        if wid not in _xdotool("search", "--name", DIALOG_TITLE_PATTERN).splitlines():
             return
         time.sleep(0.5)
     raise RuntimeError(
@@ -111,17 +129,51 @@ def select_output_folder(page: Page, output_dir: Path, *, dialog_timeout_s: floa
     )
 
 
-def wait_for_frames(output_dir: Path, *, timeout_ms: int, quiet_period_s: float = 15.0, poll_interval_s: float = 2.0) -> None:
+# Primary (blue) button position for Chromium's file-system permission
+# bubbles ("Allow this site to view and copy files?", "Save changes to
+# <folder>?"). These are browser-chrome UI, not DOM elements or separate
+# windows, so they can't be clicked via Playwright or matched by title like
+# the folder picker -- this is a fixed absolute screen position instead,
+# which holds because this devcontainer always runs a single, borderless
+# Chromium window filling the fixed 1280x800 virtual display. There's also no
+# enterprise policy to silently pre-approve either prompt (only Ask/Block),
+# so clicking through them is unavoidable.
+PERMISSION_BUBBLE_BUTTON = (784, 143)
+
+
+def click_permission_bubble() -> None:
+    time.sleep(1.0)  # give the bubble time to render
+    x, y = PERMISSION_BUBBLE_BUTTON
+    _xdotool("mousemove", "--sync", str(x), str(y))
+    time.sleep(0.2)
+    _xdotool("click", "1")
+
+
+def wait_for_frames(
+    output_dir: Path,
+    *,
+    expected_frame_count: int | None,
+    timeout_ms: int,
+    quiet_period_s: float = 60.0,
+    poll_interval_s: float = 2.0,
+) -> None:
     """Local Image Sequence rendering writes frames directly into output_dir
-    via the File System Access API -- there's no browser download event to
-    wait on. Considered done once at least one frame exists and the file
-    count has stopped growing for quiet_period_s.
+    (in a project-named subfolder) via the File System Access API -- there's
+    no browser download event to wait on. Primarily considered done once the
+    number of JPEG files reaches expected_frame_count (read from the .esp's
+    settings.duration); if that count isn't available, falls back to no new
+    JPEGs appearing for quiet_period_s. That fallback's window is long
+    because SwiftShader software rendering (this devcontainer has no real
+    GPU) can take well over a minute per frame -- a short quiet period would
+    mistake "still rendering the next frame" for "done".
     """
     deadline = time.monotonic() + timeout_ms / 1000
     last_count = -1
     stable_since = None
     while time.monotonic() < deadline:
-        count = len(list(output_dir.glob("*")))
+        count = len(list(output_dir.rglob("*.jpg"))) + len(list(output_dir.rglob("*.jpeg")))
+        if expected_frame_count is not None and count >= expected_frame_count:
+            return
         if count != last_count:
             last_count = count
             stable_since = time.monotonic()
@@ -131,14 +183,21 @@ def wait_for_frames(output_dir: Path, *, timeout_ms: int, quiet_period_s: float 
     raise TimeoutError(f"no stable output detected in {output_dir} within the timeout")
 
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "out"
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Render an Earth Studio .esp project to a JPEG image sequence.")
     parser.add_argument("esp_file", type=Path, help="Path to the .esp project file to render")
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=None,
-        help="Directory to render the JPEG sequence into (default: <esp-stem>_frames/)",
+        default=DEFAULT_OUTPUT_DIR,
+        help=(
+            "Directory to render the JPEG sequence into (default: out/ at the repo root). "
+            "Earth Studio nests frames under a project-name subfolder of this directory on its own."
+        ),
     )
     parser.add_argument(
         "--headless",
@@ -150,22 +209,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Validate arguments and the .esp file, print the planned actions, and exit without launching a browser",
     )
-    args = parser.parse_args(argv)
-    if args.output_dir is None:
-        args.output_dir = Path(f"{args.esp_file.stem}_frames")
-    return args
+    return parser.parse_args(argv)
 
 
-def validate_esp_file(esp_file: Path) -> None:
+def validate_esp_file(esp_file: Path) -> dict:
     if not esp_file.is_file():
         sys.exit(f"error: {esp_file} does not exist")
     try:
-        json.loads(esp_file.read_text())
+        return json.loads(esp_file.read_text())
     except json.JSONDecodeError as e:
         sys.exit(f"error: {esp_file} is not valid JSON: {e}")
 
 
-def render(esp_file: Path, output_dir: Path, *, headless: bool) -> None:
+def render(esp_file: Path, output_dir: Path, *, headless: bool, expected_frame_count: int | None) -> None:
     with sync_playwright() as playwright:
         context = launch_context(playwright, headless=headless)
         page = first_page(context)
@@ -186,9 +242,11 @@ def render(esp_file: Path, output_dir: Path, *, headless: bool) -> None:
         page.click(FORMAT_IMAGE_SEQUENCE_OPTION)
 
         select_output_folder(page, output_dir)
+        click_permission_bubble()  # "Allow this site to view and copy files?"
 
         page.click(START_RENDER_BUTTON)
-        wait_for_frames(output_dir, timeout_ms=RENDER_TIMEOUT_MS)
+        click_permission_bubble()  # "Save changes to <folder>?"
+        wait_for_frames(output_dir, expected_frame_count=expected_frame_count, timeout_ms=RENDER_TIMEOUT_MS)
 
         context.close()
         print(f"Rendered frames written to {output_dir}/")
@@ -196,7 +254,12 @@ def render(esp_file: Path, output_dir: Path, *, headless: bool) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    validate_esp_file(args.esp_file)
+    esp_data = validate_esp_file(args.esp_file)
+    duration = esp_data.get("settings", {}).get("duration")
+    # Confirmed live: a duration of 450 wrote exactly 450 frames
+    # (frankfurt_hauptbahnhof_orbit_000.jpeg .. _449.jpeg), so the .esp's
+    # settings.duration is already the true frame count.
+    expected_frame_count = duration
 
     if args.dry_run:
         print(f"Would import {args.esp_file} into Earth Studio")
@@ -204,7 +267,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Would render frames directly into {args.output_dir}/")
         return
 
-    render(args.esp_file, args.output_dir, headless=args.headless)
+    render(args.esp_file, args.output_dir, headless=args.headless, expected_frame_count=expected_frame_count)
 
 
 if __name__ == "__main__":

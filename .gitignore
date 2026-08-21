@@ -225,3 +225,6 @@ __marimo__/
 
 # Playwright's persistent Earth Studio login profile (live Google session data)
 .auth/
+
+# Rendered frame sequences
+/out/

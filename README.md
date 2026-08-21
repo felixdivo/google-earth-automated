@@ -46,10 +46,12 @@ Then, for each project:
 uv run src/studio_render.py frankfurt_hauptbahnhof_orbit.esp
 ```
 
-This renders the JPEG frames directly into `frankfurt_hauptbahnhof_orbit_frames/`
-by default (`--output-dir` to override). Add `--dry-run` to validate the `.esp`
-file and see the planned steps without opening a browser, or `--headless` once
-the automation is verified to work unattended.
+This renders the JPEG frames directly into `out/frankfurt_hauptbahnhof_orbit/`
+by default — Earth Studio nests frames under a project-name subfolder of
+`--output-dir` (`out/` at the repo root by default) on its own. Add
+`--dry-run` to validate the `.esp` file and see the planned steps without
+opening a browser, or `--headless` once the automation is verified to work
+unattended.
 
 Earth Studio grants that output folder through the browser's File System
 Access API, which Chromium serves as a *native OS dialog* — outside
