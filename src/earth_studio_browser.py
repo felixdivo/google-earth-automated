@@ -36,7 +36,12 @@ def launch_context(playwright: Playwright, *, headless: bool = False) -> Browser
         # Chrome, which is even less likely to get flagged, isn't an option:
         # Google doesn't ship Chrome for Linux ARM64, which this devcontainer
         # runs on.)
-        args=["--disable-blink-features=AutomationControlled"],
+        # --test-type suppresses the "You are using an unsupported
+        # command-line flag: --no-sandbox" infobar that Playwright's implicit
+        # --no-sandbox (required to run Chromium as root) would otherwise
+        # show -- left up, it pushes every native permission-bubble button in
+        # studio_render.py's fixed click coordinates down by its height.
+        args=["--disable-blink-features=AutomationControlled", "--test-type"],
         ignore_default_args=["--enable-automation"],
     )
 
