@@ -23,9 +23,9 @@ project file.
 
 Google Earth Studio has no public render API, so rendering is done by driving
 the real `earth.google.com/studio` web app with Playwright: importing the
-project, triggering its built-in Render panel as an Image Sequence (PNG), and
-extracting the resulting frames. Turning that sequence into a video is a
-separate, later step, not covered here.
+project and triggering its built-in Render panel as an Image Sequence (JPEG —
+the only local render format Earth Studio offers). Turning that sequence into
+a video is a separate, later step, not covered here.
 
 One-time setup (the devcontainer already runs `playwright install chromium`
 via `onCreateCommand`; run it yourself first if you're not using the
@@ -46,10 +46,17 @@ Then, for each project:
 uv run src/studio_render.py frankfurt_hauptbahnhof_orbit.esp
 ```
 
-This extracts the rendered PNG frames into `frankfurt_hauptbahnhof_orbit_frames/`
+This renders the JPEG frames directly into `frankfurt_hauptbahnhof_orbit_frames/`
 by default (`--output-dir` to override). Add `--dry-run` to validate the `.esp`
 file and see the planned steps without opening a browser, or `--headless` once
 the automation is verified to work unattended.
+
+Earth Studio grants that output folder through the browser's File System
+Access API, which Chromium serves as a *native OS dialog* — outside
+Playwright's control entirely. `studio_render.py` drives that dialog with
+`xdotool` instead (see `select_output_folder()`), which depends on the
+devcontainer's D-Bus/portal/window-manager stack and on the `/dev/fuse` +
+`CAP_SYS_ADMIN` grant described in the Security section below.
 
 Earth Studio's UI is an undocumented, JS-heavy SPA, so `studio_render.py`'s
 selectors are best-effort and may need adjusting after the first live run — the
@@ -64,3 +71,27 @@ starts a virtual display + noVNC (`.devcontainer/start-vnc.sh`, run via
 `http://localhost:6080/vnc.html` in a browser on your host to see and
 interact with the Chromium window. Running natively on your host works too,
 without any of this.
+
+## Security
+
+The devcontainer trades away several isolation defaults to make this
+automation work; worth knowing before you run it:
+
+- **Runs as root** (`containerUser: root`) — a compromise of anything in the
+  container gets root within it, not just an unprivileged user.
+- **`/dev/fuse` + `CAP_SYS_ADMIN`** (`runArgs` in `devcontainer.json`) — needed
+  so the native output-folder picker can confirm via `xdg-desktop-portal`'s
+  FUSE-backed Documents portal; `CAP_SYS_ADMIN` is the single capability most
+  associated with real container-escape exploits, though it stays scoped to
+  Docker Desktop's own VM, not your host OS directly.
+- **Chromium's automation-detection flags are stripped**
+  (`--disable-blink-features=AutomationControlled`, `--enable-automation`
+  removed) — this is what gets past Google's bot-detection at login, but it
+  also makes the browser indistinguishable from a real user session to any
+  other site it visits.
+- **Chromium runs with `--no-sandbox`** — an automatic consequence of running
+  as root, and it removes Chromium's own internal process-sandboxing against
+  malicious content it renders.
+- **`.auth/chrome-profile/` holds a live Google session** (gitignored, never
+  committed) — anyone with filesystem access to it can reuse your login
+  without re-authenticating.
