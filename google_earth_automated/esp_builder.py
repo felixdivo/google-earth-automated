@@ -137,10 +137,16 @@ def build_orbit_esp(
     lons = [w["lon"] for w in legs]
     lats = [w["lat"] for w in legs]
     alts = [w["alt_m"] for w in legs]
-    headings = _unwrap_headings([bearing_between(w["lat"], w["lon"], target["lat"], target["lon"]) for w in legs])
+    headings = _unwrap_headings(
+        [bearing_between(w["lat"], w["lon"], target["lat"], target["lon"]) for w in legs]
+    )
     tilts = [_tilt_for(w, target) for w in legs]
 
-    pan_range = (min(headings), max(headings)) if min(headings) != max(headings) else (headings[0] - 0.5, headings[0] + 0.5)
+    pan_range = (
+        (min(headings), max(headings))
+        if min(headings) != max(headings)
+        else (headings[0] - 0.5, headings[0] + 0.5)
+    )
 
     duration_frames = round((n - 1) * seconds_per_leg * frame_rate)
 
@@ -307,10 +313,18 @@ def _build_cli_parser():
         action="store_true",
         help="Don't fly back to the first waypoint at the end.",
     )
-    parser.add_argument("--frame-rate", type=int, default=30, help="Project frame rate (default: 30).")
-    parser.add_argument("--width", type=int, default=1920, help="Video width in pixels (default: 1920).")
-    parser.add_argument("--height", type=int, default=1080, help="Video height in pixels (default: 1080).")
-    parser.add_argument("--name", default="orbit", help="Project name embedded in the .esp file (default: orbit).")
+    parser.add_argument(
+        "--frame-rate", type=int, default=30, help="Project frame rate (default: 30)."
+    )
+    parser.add_argument(
+        "--width", type=int, default=1920, help="Video width in pixels (default: 1920)."
+    )
+    parser.add_argument(
+        "--height", type=int, default=1080, help="Video height in pixels (default: 1080)."
+    )
+    parser.add_argument(
+        "--name", default="orbit", help="Project name embedded in the .esp file (default: orbit)."
+    )
     parser.add_argument(
         "-o",
         "--output",
@@ -341,8 +355,10 @@ def main(argv=None):
         waypoints.append({"lat": lat, "lon": lon, "alt_m": target["alt_m"] + args.camera_height})
 
     console.rule("[bold cyan]esp-builder[/]")
-    console.print(f"Orbiting [bold]({target['lat']:.5f}, {target['lon']:.5f})[/] "
-                  f"at radius [bold]{args.radius:.0f}m[/], camera height [bold]{args.camera_height:.0f}m[/].")
+    console.print(
+        f"Orbiting [bold]({target['lat']:.5f}, {target['lon']:.5f})[/] "
+        f"at radius [bold]{args.radius:.0f}m[/], camera height [bold]{args.camera_height:.0f}m[/]."
+    )
 
     table = Table(title="Waypoints", show_lines=False)
     table.add_column("#", justify="right")
@@ -352,7 +368,13 @@ def main(argv=None):
     table.add_column("Altitude (m)", justify="right")
     for i, w in enumerate(waypoints):
         bearing_deg = args.start_bearing + i * 360.0 / args.waypoints
-        table.add_row(str(i + 1), f"{bearing_deg:.1f}°", f"{w['lat']:.5f}", f"{w['lon']:.5f}", f"{w['alt_m']:.0f}")
+        table.add_row(
+            str(i + 1),
+            f"{bearing_deg:.1f}°",
+            f"{w['lat']:.5f}",
+            f"{w['lon']:.5f}",
+            f"{w['alt_m']:.0f}",
+        )
     console.print(table)
 
     esp = build_orbit_esp(

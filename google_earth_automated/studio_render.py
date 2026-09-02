@@ -43,7 +43,9 @@ from .earth_studio_browser import (
 )
 
 # --- Earth Studio UI selectors (best-effort; fix here if a step fails) -----
-IMPORT_TOGGLE = "div.split-button:has(button[data-action='click:openProject']) button.toggle-dropdown"
+IMPORT_TOGGLE = (
+    "div.split-button:has(button[data-action='click:openProject']) button.toggle-dropdown"
+)
 IMPORT_MENU_ITEM = "div[data-action='click:importProject']"
 RENDER_BUTTON = "text=Render"
 FORMAT_IMAGE_SEQUENCE_OPTION = "text=Image sequence (.jpeg)"
@@ -51,7 +53,9 @@ CHOOSE_FOLDER_BUTTON = "#output-dir-btn"  # reads "Choose folder" only the first
 START_RENDER_BUTTON = "button[data-action='click:onStartClick']"
 # -----------------------------------------------------------------------------
 
-RENDER_TIMEOUT_MS = 3 * 60 * 60 * 1000  # SwiftShader software rendering (no real GPU here) is slow -- give it room
+RENDER_TIMEOUT_MS = (
+    3 * 60 * 60 * 1000
+)  # SwiftShader software rendering (no real GPU here) is slow -- give it room
 
 PROJECT_LOAD_WAIT_MS = 8000  # importing a project re-renders the whole scene
 
@@ -93,7 +97,9 @@ def select_output_folder(page: Page, output_dir: Path, *, dialog_timeout_s: floa
 
     wid = _find_window(DIALOG_TITLE_PATTERN, timeout_s=dialog_timeout_s)
     if wid is None:
-        raise RuntimeError("folder picker dialog never appeared -- check the D-Bus/portal/WM stack is running")
+        raise RuntimeError(
+            "folder picker dialog never appeared -- check the D-Bus/portal/WM stack is running"
+        )
 
     _xdotool("windowactivate", "--sync", wid)
     time.sleep(0.5)
@@ -113,7 +119,11 @@ def select_output_folder(page: Page, output_dir: Path, *, dialog_timeout_s: floa
     if wid is None:
         return
 
-    geometry = dict(line.split("=", 1) for line in _xdotool("getwindowgeometry", "--shell", wid).splitlines() if "=" in line)
+    geometry = dict(
+        line.split("=", 1)
+        for line in _xdotool("getwindowgeometry", "--shell", wid).splitlines()
+        if "=" in line
+    )
     x, y, width, height = (int(geometry[k]) for k in ("X", "Y", "WIDTH", "HEIGHT"))
     # The "Select Folder" button sits in the dialog's bottom-right action area.
     # There's no stable selector for a native window, so this is a fixed
@@ -182,7 +192,11 @@ def wait_for_frames(
         if count != last_count:
             last_count = count
             stable_since = time.monotonic()
-        elif count > 0 and stable_since is not None and time.monotonic() - stable_since >= quiet_period_s:
+        elif (
+            count > 0
+            and stable_since is not None
+            and time.monotonic() - stable_since >= quiet_period_s
+        ):
             return
         time.sleep(poll_interval_s)
     raise TimeoutError(f"no stable output detected in {output_dir} within the timeout")
@@ -193,7 +207,9 @@ DEFAULT_OUTPUT_DIR = REPO_ROOT / "out"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Render an Earth Studio .esp project to a JPEG image sequence.")
+    parser = argparse.ArgumentParser(
+        description="Render an Earth Studio .esp project to a JPEG image sequence."
+    )
     parser.add_argument("esp_file", type=Path, help="Path to the .esp project file to render")
     parser.add_argument(
         "--output-dir",
@@ -226,7 +242,9 @@ def validate_esp_file(esp_file: Path) -> dict:
         sys.exit(f"error: {esp_file} is not valid JSON: {e}")
 
 
-def render(esp_file: Path, output_dir: Path, *, headless: bool, expected_frame_count: int | None) -> None:
+def render(
+    esp_file: Path, output_dir: Path, *, headless: bool, expected_frame_count: int | None
+) -> None:
     with sync_playwright() as playwright:
         context = launch_context(playwright, headless=headless)
         page = first_page(context)
@@ -253,7 +271,9 @@ def render(esp_file: Path, output_dir: Path, *, headless: bool, expected_frame_c
 
         page.click(START_RENDER_BUTTON)
         click_permission_bubble()  # "Save changes to <folder>?"
-        wait_for_frames(output_dir, expected_frame_count=expected_frame_count, timeout_ms=RENDER_TIMEOUT_MS)
+        wait_for_frames(
+            output_dir, expected_frame_count=expected_frame_count, timeout_ms=RENDER_TIMEOUT_MS
+        )
 
         context.close()
         print(f"Rendered frames written to {output_dir}/")
@@ -274,7 +294,12 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Would render frames directly into {args.output_dir}/")
         return
 
-    render(args.esp_file, args.output_dir, headless=args.headless, expected_frame_count=expected_frame_count)
+    render(
+        args.esp_file,
+        args.output_dir,
+        headless=args.headless,
+        expected_frame_count=expected_frame_count,
+    )
 
 
 if __name__ == "__main__":
