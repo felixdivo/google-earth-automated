@@ -33,9 +33,9 @@ bearing, leg duration, frame rate, resolution, open vs. closed loop, ...).
 
 ## Rendering a project to an image sequence
 
-One-time setup (the devcontainer already runs `uv run playwright install chromium`
-via `onCreateCommand`; run it yourself first if you're not using the
-devcontainer):
+One-time setup (the devcontainer already runs `uv run playwright install
+--with-deps chromium` via `onCreateCommand`; run it yourself first if you're
+not using the devcontainer):
 
 ```
 uv run studio-login
@@ -78,8 +78,9 @@ Two things make this harder than a normal Playwright script:
   and the selector block at the top of
   `google_earth_automated/studio_render.py`.
 
-The devcontainer installs Chromium's runtime shared libs so `--headless` works
-out of the box, and starts a virtual display + noVNC
+Chromium's runtime shared libs and fonts come from Playwright's own
+`--with-deps` list, so `--headless` works out of the box; the devcontainer adds
+just the display/VNC/portal stack on top. It starts a virtual display + noVNC
 (`.devcontainer/start-vnc.sh`) on port 6080 for the headed `studio-login`
 step — once the container is up, open `http://localhost:6080/vnc.html` in a
 browser on your host to see and interact with the Chromium window. Running
