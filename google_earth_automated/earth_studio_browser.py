@@ -40,8 +40,8 @@ def launch_context(playwright: Playwright, *, headless: bool = False) -> Browser
         # --test-type suppresses the "You are using an unsupported
         # command-line flag: --no-sandbox" infobar that Playwright's implicit
         # --no-sandbox (required to run Chromium as root) would otherwise
-        # show -- left up, it pushes every native permission-bubble button in
-        # studio-render's fixed click coordinates down by its height.
+        # show. It shifts the page viewport down by its height and is pure
+        # noise in the noVNC view of a headed run.
         args=["--disable-blink-features=AutomationControlled", "--test-type"],
         ignore_default_args=["--enable-automation"],
     )
@@ -86,11 +86,23 @@ def gpu_status(page: Page) -> str:
     destroyed execution context, and a diagnostic is not worth failing a
     render over.
     """
-    try:
-        page.wait_for_load_state("domcontentloaded")
-        renderer = webgl_renderer(page)
-    except PlaywrightError as e:
-        return f"GPU: could not be determined ({type(e).__name__})"
+    # Retried because the redirect this races against is transient: the first
+    # probe often lands in an execution context that is being torn down, and
+    # the next one a moment later succeeds. A single attempt made the warning
+    # below silently not appear on roughly every other run.
+    last_error: PlaywrightError | None = None
+    renderer = None
+    for attempt in range(3):
+        try:
+            page.wait_for_load_state("domcontentloaded")
+            renderer = webgl_renderer(page)
+            break
+        except PlaywrightError as e:
+            last_error = e
+            if attempt < 2:
+                page.wait_for_timeout(1000)
+    else:
+        return f"GPU: could not be determined ({type(last_error).__name__})"
 
     if renderer is None:
         return "GPU: unavailable -- no WebGL context at all, Earth Studio will not render"
