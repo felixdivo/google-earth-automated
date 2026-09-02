@@ -1,6 +1,6 @@
 #!/bin/sh
 # Starts a virtual display + VNC/noVNC so headed Chromium (needed for the
-# Earth Studio login step in src/studio_login.py) can be viewed in a normal
+# Earth Studio login step, `uv run studio-login`) can be viewed in a normal
 # browser tab via the forwarded 6080 port. Also starts a window manager and
 # the D-Bus/portal stack: Earth Studio's local image-sequence render asks for
 # an output folder via the File System Access API, which Chromium serves via

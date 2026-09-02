@@ -1,7 +1,7 @@
 """Shared Playwright plumbing for driving the Google Earth Studio web app.
 
 Uses a persistent browser profile (see PROFILE_DIR) so a login performed once
-via studio_login.py is reused by studio_render.py. Headed by default: headless
+via studio-login is reused by studio-render. Headed by default: headless
 Chromium needs extra GPU/WebGL flags to render Earth Studio's canvas correctly,
 and the first live runs need to be visually debuggable anyway. A headed run
 needs a display (X11/VNC forwarded into the container, or run natively on the
@@ -41,7 +41,7 @@ def launch_context(playwright: Playwright, *, headless: bool = False) -> Browser
         # command-line flag: --no-sandbox" infobar that Playwright's implicit
         # --no-sandbox (required to run Chromium as root) would otherwise
         # show -- left up, it pushes every native permission-bubble button in
-        # studio_render.py's fixed click coordinates down by its height.
+        # studio-render's fixed click coordinates down by its height.
         args=["--disable-blink-features=AutomationControlled", "--test-type"],
         ignore_default_args=["--enable-automation"],
     )
