@@ -7,10 +7,10 @@ Sequence of JPEGs -- there is no PNG or Cloud-free option), grants it
 render, and waits for frames to show up in that directory. Encoding the
 sequence into a video is a separate, later step -- not done here.
 
-Requires a logged-in session -- run studio_login.py first.
+Requires a logged-in session -- run studio-login first.
 
-    uv run src/studio_render.py frankfurt_hauptbahnhof_orbit.esp
-    uv run src/studio_render.py frankfurt_hauptbahnhof_orbit.esp --output-dir out/ --headless
+    uv run studio-render frankfurt_hauptbahnhof_orbit.esp
+    uv run studio-render frankfurt_hauptbahnhof_orbit.esp --output-dir out/ --headless
 
 Local Image Sequence rendering grants filesystem access via the browser's
 File System Access API (window.showDirectoryPicker()), which Chromium serves
@@ -35,7 +35,7 @@ from pathlib import Path
 
 from playwright.sync_api import Page, sync_playwright
 
-from earth_studio_browser import (
+from .earth_studio_browser import (
     EARTH_STUDIO_URL,
     first_page,
     gpu_status,
@@ -234,7 +234,7 @@ def render(esp_file: Path, output_dir: Path, *, headless: bool, expected_frame_c
 
         if "studio" not in page.url:
             context.close()
-            sys.exit("error: not logged in -- run `uv run src/studio_login.py` first")
+            sys.exit("error: not logged in -- run `uv run studio-login` first")
 
         print(gpu_status(page))
 

@@ -2,17 +2,17 @@
 
 Run this once (and again whenever the session expires):
 
-    uv run src/studio_login.py
+    uv run studio-login
 
 It opens a real, visible browser window pointed at Earth Studio, using the
 persistent profile in .auth/chrome-profile/. Log in with your Google account
 in that window, then come back to the terminal and press Enter -- the session
-is saved to disk and reused by studio_render.py.
+is saved to disk and reused by studio-render.
 """
 
 from playwright.sync_api import sync_playwright
 
-from earth_studio_browser import EARTH_STUDIO_URL, first_page, launch_context
+from .earth_studio_browser import EARTH_STUDIO_URL, first_page, launch_context
 
 
 def main() -> None:
@@ -28,7 +28,7 @@ def main() -> None:
         )
 
         context.close()
-        print("Session saved. You can now run studio_render.py.")
+        print("Session saved. You can now run studio-render.")
 
 
 if __name__ == "__main__":

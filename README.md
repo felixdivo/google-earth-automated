@@ -18,7 +18,7 @@ make sure your use complies with
 
 ## Generating a project: `esp-builder`
 
-`src/esp_builder.py` is both a conversion library (`build_orbit_esp`,
+`google_earth_automated/esp_builder.py` is both a conversion library (`build_orbit_esp`,
 `destination_point`, `write_esp`, ...) and the `esp-builder` CLI: give it a
 point of interest and it builds a `.esp` project that orbits it, camera always
 facing the target.
@@ -38,7 +38,7 @@ via `onCreateCommand`; run it yourself first if you're not using the
 devcontainer):
 
 ```
-uv run src/studio_login.py
+uv run studio-login
 ```
 
 This opens a real, visible browser window against Earth Studio using a
@@ -49,7 +49,7 @@ session is reused by every later render.
 Then, for each project:
 
 ```
-uv run src/studio_render.py frankfurt_hauptbahnhof_orbit.esp
+uv run studio-render frankfurt_hauptbahnhof_orbit.esp
 ```
 
 This imports the project, sets the render format to Image sequence (JPEG —
@@ -68,18 +68,19 @@ Two things make this harder than a normal Playwright script:
 - **Earth Studio grants the output folder through the browser's File System
   Access API**, which Chromium serves as a *native OS dialog* and native
   permission bubbles — outside Playwright's control entirely.
-  `studio_render.py` drives those with `xdotool` instead (see
+  `studio_render` drives those with `xdotool` instead (see
   `select_output_folder()` and `click_permission_bubble()`), which depends on
   the devcontainer's D-Bus/portal/window-manager stack and on the
   `/dev/fuse` + `CAP_SYS_ADMIN` grant described in Security below.
 - **Earth Studio's UI is an undocumented, JS-heavy SPA**, so
-  `studio_render.py`'s selectors are best-effort and may need adjusting after
-  a live run — they live in `src/earth_studio_browser.py` and the selector
-  block at the top of `src/studio_render.py`.
+  `studio_render`'s selectors are best-effort and may need adjusting after
+  a live run — they live in `google_earth_automated/earth_studio_browser.py`
+  and the selector block at the top of
+  `google_earth_automated/studio_render.py`.
 
 The devcontainer installs Chromium's runtime shared libs so `--headless` works
 out of the box, and starts a virtual display + noVNC
-(`.devcontainer/start-vnc.sh`) on port 6080 for the headed `studio_login.py`
+(`.devcontainer/start-vnc.sh`) on port 6080 for the headed `studio-login`
 step — once the container is up, open `http://localhost:6080/vnc.html` in a
 browser on your host to see and interact with the Chromium window. Running
 natively on your host works too, without any of this.
@@ -113,7 +114,7 @@ depends on the host:
 
 ### How to verify
 
-`studio_render.py` reports this at startup, before the render begins — it asks
+`studio-render` reports this at startup, before the render begins — it asks
 the page for its actual WebGL renderer rather than trusting Chromium's launch
 flags, so it reflects the pipeline Earth Studio's canvas is really drawn with:
 
