@@ -277,10 +277,13 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     esp_data = validate_esp_file(args.esp_file)
     duration = esp_data.get("settings", {}).get("duration")
-    # Confirmed live: a duration of 450 wrote exactly 450 frames
-    # (frankfurt_hauptbahnhof_orbit_000.jpeg .. _449.jpeg), so the .esp's
-    # settings.duration is already the true frame count.
-    expected_frame_count = duration
+    # Earth Studio renders the range inclusive of both ends: for
+    # settings.duration 450 its own render dialog reads "Frames 0 - 450" and
+    # "Rendered: n / 451". The earlier note here claimed duration was already
+    # the true count, citing a run that produced _000..._449 -- but that run
+    # stopped at 450 only because this waiter returned there and closed the
+    # browser mid-write, losing the final frame.
+    expected_frame_count = duration + 1 if duration is not None else None
 
     if args.dry_run:
         print(f"Would import {args.esp_file} into Earth Studio")
