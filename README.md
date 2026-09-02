@@ -133,9 +133,8 @@ automation work; worth knowing before you run it:
   committed) — anyone with filesystem access to it can reuse your login
   without re-authenticating.
 
-This automates a Google product through its web UI rather than a public API;
-make sure your use complies with [Google's Terms of Service](https://policies.google.com/terms).
-
 ## License
 
-[MIT](LICENSE)
+Copyright (c) 2026 Felix Divo — [MIT](LICENSE).
+
+Make sure your use complies with Google's Terms of Service.
