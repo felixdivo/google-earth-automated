@@ -33,7 +33,7 @@ bearing, leg duration, frame rate, resolution, open vs. closed loop, ...).
 
 ## Rendering a project to an image sequence
 
-One-time setup (the devcontainer already runs `playwright install chromium`
+One-time setup (the devcontainer already runs `uv run playwright install chromium`
 via `onCreateCommand`; run it yourself first if you're not using the
 devcontainer):
 
@@ -60,6 +60,8 @@ Turning that sequence into a video is a separate, later step, not covered
 here. Add `--dry-run` to validate the `.esp` file and see the planned steps
 without opening a browser, or `--headless` once the automation is verified to
 work unattended.
+
+### Technical details
 
 Two things make this harder than a normal Playwright script:
 
