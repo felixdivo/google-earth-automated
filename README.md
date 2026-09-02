@@ -111,6 +111,25 @@ depends on the host:
 - **Native Linux Docker host** — add `--device=/dev/dri` to `runArgs` to pass
   the host's render node straight through.
 
+### How to verify
+
+`studio_render.py` reports this at startup, before the render begins — it asks
+the page for its actual WebGL renderer rather than trusting Chromium's launch
+flags, so it reflects the pipeline Earth Studio's canvas is really drawn with:
+
+```
+GPU: not in use -- falling back to software rendering, expect a slow render (see README, 'GPU acceleration')
+     renderer: ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver)
+```
+
+A working GPU reports `GPU: in use, hardware-accelerated` instead, with a
+renderer naming real hardware (`ANGLE (NVIDIA GeForce ...)`,
+`ANGLE (Intel, Mesa ...)`, `D3D12 (...)` under WSL2). Anything mentioning
+SwiftShader, llvmpipe, or softpipe is CPU rasterization. For the full picture,
+open `chrome://gpu` in the noVNC-visible browser
+(`http://localhost:6080/vnc.html`) and check the *Graphics Feature Status*
+table.
+
 ## Security
 
 The devcontainer trades away several isolation defaults to make the render

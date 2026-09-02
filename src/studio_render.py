@@ -35,7 +35,12 @@ from pathlib import Path
 
 from playwright.sync_api import Page, sync_playwright
 
-from earth_studio_browser import EARTH_STUDIO_URL, first_page, launch_context
+from earth_studio_browser import (
+    EARTH_STUDIO_URL,
+    first_page,
+    gpu_status,
+    launch_context,
+)
 
 # --- Earth Studio UI selectors (best-effort; fix here if a step fails) -----
 IMPORT_TOGGLE = "div.split-button:has(button[data-action='click:openProject']) button.toggle-dropdown"
@@ -230,6 +235,8 @@ def render(esp_file: Path, output_dir: Path, *, headless: bool, expected_frame_c
         if "studio" not in page.url:
             context.close()
             sys.exit("error: not logged in -- run `uv run src/studio_login.py` first")
+
+        print(gpu_status(page))
 
         page.click(IMPORT_TOGGLE)
         with page.expect_file_chooser() as file_chooser_info:
