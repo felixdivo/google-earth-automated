@@ -119,19 +119,14 @@ def select_output_folder(page: Page, output_dir: Path, *, dialog_timeout_s: floa
     if wid is None:
         return
 
-    geometry = dict(
-        line.split("=", 1)
-        for line in _xdotool("getwindowgeometry", "--shell", wid).splitlines()
-        if "=" in line
-    )
-    x, y, width, height = (int(geometry[k]) for k in ("X", "Y", "WIDTH", "HEIGHT"))
-    # The "Select Folder" button sits in the dialog's bottom-right action area.
-    # There's no stable selector for a native window, so this is a fixed
-    # offset from the corner, measured empirically against this dialog's
-    # layout -- fragile if that layout ever changes.
-    _xdotool("mousemove", "--sync", str(x + width - 95), str(y + height - 35))
-    time.sleep(0.2)
-    _xdotool("click", "1")
+    # "Select Folder" is the dialog's default button, so Return activates it
+    # wherever GTK happens to have placed it. This used to click a fixed pixel
+    # offset from the window's bottom-right corner instead, which silently
+    # missed whenever the dialog's layout shifted -- and UI font metrics alone
+    # are enough to shift it, so a devcontainer rebuild could break it.
+    _xdotool("windowactivate", "--sync", wid)
+    time.sleep(0.3)
+    _xdotool("key", "--window", wid, "Return")
 
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
