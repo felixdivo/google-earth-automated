@@ -14,3 +14,11 @@ studio-render = "google_earth_automated.studio_render:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = ["ruff>=0.16.5"]
+
+[tool.ruff]
+# Matches the width the code was already written to; the default 88 would split
+# the geodesy math in esp_builder.py mid-expression.
+line-length = 100
