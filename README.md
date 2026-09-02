@@ -1,10 +1,26 @@
 # google-earth-automated
 
-Generate Google Earth Studio `.esp` flyover project files programmatically.
+![Python](https://img.shields.io/badge/python-3.13%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Built with Vibes](https://img.shields.io/badge/built%20with-vibes-beige)
+
+Generate Google Earth Studio `.esp` flyover projects programmatically, and
+render them to JPEG image sequences without touching the UI by hand.
+
+Google Earth Studio has no public API for either half, so both are automated
+against the real product: `.esp` is Earth Studio's own (undocumented) project
+file format, reverse-engineered here; rendering drives the real
+`earth.google.com/studio` web app with Playwright, clicking through its
+Render panel the same way a person would. **This automates a Google product
+through its web UI — see [Security](#security) below before running it, and
+make sure your use complies with
+[Google's Terms of Service](https://policies.google.com/terms).**
+
+## Generating a project: `esp-builder`
 
 `src/esp_builder.py` is both a conversion library (`build_orbit_esp`,
-`destination_point`, `write_esp`, ...) and the `esp-builder` CLI: it takes a
-point of interest and builds a `.esp` project that orbits it, camera always
+`destination_point`, `write_esp`, ...) and the `esp-builder` CLI: give it a
+point of interest and it builds a `.esp` project that orbits it, camera always
 facing the target.
 
 ```
@@ -15,17 +31,7 @@ uv run esp-builder --lat 50.1070 --lon 8.6633 --ground-alt 115 \
 Run `uv run esp-builder --help` for all options (waypoint count, start
 bearing, leg duration, frame rate, resolution, open vs. closed loop, ...).
 
-The `.esp` format isn't officially documented by Google; this is a best-effort
-implementation cross-referenced from community tooling and a real exported
-project file.
-
-## Rendering an .esp to an image sequence
-
-Google Earth Studio has no public render API, so rendering is done by driving
-the real `earth.google.com/studio` web app with Playwright: importing the
-project and triggering its built-in Render panel as an Image Sequence (JPEG —
-the only local render format Earth Studio offers). Turning that sequence into
-a video is a separate, later step, not covered here.
+## Rendering a project to an image sequence
 
 One-time setup (the devcontainer already runs `playwright install chromium`
 via `onCreateCommand`; run it yourself first if you're not using the
@@ -35,10 +41,10 @@ devcontainer):
 uv run src/studio_login.py
 ```
 
-`studio_login.py` opens a real, visible browser window against Earth Studio
-using a persistent profile in `.auth/chrome-profile/` (gitignored — it holds
-live Google session data). Log in there, then press Enter in the terminal;
-the session is reused by every later render.
+This opens a real, visible browser window against Earth Studio using a
+persistent profile in `.auth/chrome-profile/` (gitignored — it holds live
+Google session data). Log in there, then press Enter in the terminal; the
+session is reused by every later render.
 
 Then, for each project:
 
@@ -46,52 +52,47 @@ Then, for each project:
 uv run src/studio_render.py frankfurt_hauptbahnhof_orbit.esp
 ```
 
-This renders the JPEG frames directly into `out/frankfurt_hauptbahnhof_orbit/`
-by default — Earth Studio nests frames under a project-name subfolder of
-`--output-dir` (`out/` at the repo root by default) on its own. Add
-`--dry-run` to validate the `.esp` file and see the planned steps without
-opening a browser, or `--headless` once the automation is verified to work
-unattended.
+This imports the project, sets the render format to Image sequence (JPEG —
+the only local, non-Cloud format Earth Studio offers), and renders the frames
+directly into `out/frankfurt_hauptbahnhof_orbit/` by default (Earth Studio
+nests frames under a project-name subfolder of `--output-dir` on its own).
+Turning that sequence into a video is a separate, later step, not covered
+here. Add `--dry-run` to validate the `.esp` file and see the planned steps
+without opening a browser, or `--headless` once the automation is verified to
+work unattended.
 
-Earth Studio grants that output folder through the browser's File System
-Access API, which Chromium serves as a *native OS dialog* — outside
-Playwright's control entirely. `studio_render.py` drives that dialog with
-`xdotool` instead (see `select_output_folder()`), which depends on the
-devcontainer's D-Bus/portal/window-manager stack and on the `/dev/fuse` +
-`CAP_SYS_ADMIN` grant described in the Security section below.
+Two things make this harder than a normal Playwright script:
 
-Earth Studio's UI is an undocumented, JS-heavy SPA, so `studio_render.py`'s
-selectors are best-effort and may need adjusting after the first live run — the
-Earth Studio interactions live in `src/earth_studio_browser.py` and the
-selector block at the top of `src/studio_render.py`.
+- **Earth Studio grants the output folder through the browser's File System
+  Access API**, which Chromium serves as a *native OS dialog* and native
+  permission bubbles — outside Playwright's control entirely.
+  `studio_render.py` drives those with `xdotool` instead (see
+  `select_output_folder()` and `click_permission_bubble()`), which depends on
+  the devcontainer's D-Bus/portal/window-manager stack and on the
+  `/dev/fuse` + `CAP_SYS_ADMIN` grant described in Security below.
+- **Earth Studio's UI is an undocumented, JS-heavy SPA**, so
+  `studio_render.py`'s selectors are best-effort and may need adjusting after
+  a live run — they live in `src/earth_studio_browser.py` and the selector
+  block at the top of `src/studio_render.py`.
 
-The devcontainer runs as root and installs Chromium's runtime shared libs
-(libnss3, libatk1.0-0, ...) via `onCreateCommand` so `--headless` works out
-of the box. For the headed `studio_login.py` step, the devcontainer also
-starts a virtual display + noVNC (`.devcontainer/start-vnc.sh`, run via
-`postStartCommand`) on port 6080 — once the container is up, open
-`http://localhost:6080/vnc.html` in a browser on your host to see and
-interact with the Chromium window. Running natively on your host works too,
-without any of this.
+The devcontainer installs Chromium's runtime shared libs so `--headless` works
+out of the box, and starts a virtual display + noVNC
+(`.devcontainer/start-vnc.sh`) on port 6080 for the headed `studio_login.py`
+step — once the container is up, open `http://localhost:6080/vnc.html` in a
+browser on your host to see and interact with the Chromium window. Running
+natively on your host works too, without any of this.
 
 ## GPU acceleration
 
-Rendering runs entirely in software by default — Chromium falls back to
-SwiftShader because the devcontainer requests no GPU device. That's
-deliberate: a hardcoded GPU device path that doesn't exist on the host would
-fail to start the container outright, and `devcontainer.json` is shared
-across whatever host you're on. The tradeoff is that renders are noticeably
-slower here than the same project open in a real, GPU-accelerated browser on
-your host.
+Rendering runs entirely in software by default (Chromium falls back to
+SwiftShader) since the devcontainer requests no GPU device — a hardcoded
+device path that doesn't exist on the host would fail to start the container
+outright. This makes renders noticeably slower than the same project open in
+a real, GPU-accelerated browser on your host. Whether you can fix that
+depends on the host:
 
-Whether you can get real hardware acceleration instead depends on the host:
-
-- **Windows (Docker Desktop, WSL2 backend)** — possible. WSL2 exposes the
-  host GPU through `/dev/dxg` and Mesa's `d3d12` driver, which translates
-  OpenGL/Vulkan calls into DirectX 12 run by the Windows GPU driver (works
-  for NVIDIA/AMD/Intel alike, not vendor-locked). To try it, merge this into
-  the existing `runArgs`/`mounts`/`containerEnv` entries in
-  `devcontainer.json`:
+- **Windows (Docker Desktop, WSL2 backend)** — possible, via WSL2's `/dev/dxg`
+  + Mesa `d3d12` translation layer. Merge into `devcontainer.json`:
   ```json
   "runArgs": ["--device=/dev/dxg"],
   "mounts": [
@@ -100,19 +101,18 @@ Whether you can get real hardware acceleration instead depends on the host:
   "containerEnv": {"LD_LIBRARY_PATH": "/usr/lib/wsl/lib"}
   ```
   Untested from this project's (Mac-based) development environment — verify
-  it actually engages hardware rendering before relying on it, e.g. by
-  checking that Chromium's process list no longer includes
-  `--enable-unsafe-swiftshader`.
-- **Mac (Docker Desktop, any chip)** — not possible today. Docker Desktop's
-  VM uses `Hypervisor.framework`, which Apple gives no GPU passthrough or
-  virtualization through at all.
+  it actually engages hardware rendering (Chromium's process list should no
+  longer include `--enable-unsafe-swiftshader`) before relying on it.
+- **Mac (Docker Desktop, any chip)** — not possible today. Docker Desktop's VM
+  uses `Hypervisor.framework`, which Apple gives no GPU passthrough through at
+  all.
 - **Native Linux Docker host** — add `--device=/dev/dri` to `runArgs` to pass
-  the host's render node straight through; no translation layer needed.
+  the host's render node straight through.
 
 ## Security
 
-The devcontainer trades away several isolation defaults to make this
-automation work; worth knowing before you run it:
+The devcontainer trades away several isolation defaults to make the render
+automation work. Worth knowing before you run it:
 
 - **Runs as root** (`containerUser: root`) — a compromise of anything in the
   container gets root within it, not just an unprivileged user.
