@@ -144,26 +144,6 @@ def select_output_folder(page: Page, output_dir: Path, *, dialog_timeout_s: floa
     )
 
 
-# Primary (blue) button position for Chromium's file-system permission
-# bubbles ("Allow this site to view and copy files?", "Save changes to
-# <folder>?"). These are browser-chrome UI, not DOM elements or separate
-# windows, so they can't be clicked via Playwright or matched by title like
-# the folder picker -- this is a fixed absolute screen position instead,
-# which holds because this devcontainer always runs a single, borderless
-# Chromium window filling the fixed 1280x800 virtual display. There's also no
-# enterprise policy to silently pre-approve either prompt (only Ask/Block),
-# so clicking through them is unavoidable.
-PERMISSION_BUBBLE_BUTTON = (784, 143)
-
-
-def click_permission_bubble() -> None:
-    time.sleep(1.0)  # give the bubble time to render
-    x, y = PERMISSION_BUBBLE_BUTTON
-    _xdotool("mousemove", "--sync", str(x), str(y))
-    time.sleep(0.2)
-    _xdotool("click", "1")
-
-
 def wait_for_frames(
     output_dir: Path,
     *,
@@ -267,10 +247,11 @@ def render(
         page.click(FORMAT_IMAGE_SEQUENCE_OPTION)
 
         select_output_folder(page, output_dir)
-        click_permission_bubble()  # "Allow this site to view and copy files?"
 
+        # No permission bubbles to click through: the devcontainer pre-grants
+        # File System Access via Chromium's managed-policy file (see
+        # .devcontainer/setup.sh).
         page.click(START_RENDER_BUTTON)
-        click_permission_bubble()  # "Save changes to <folder>?"
         wait_for_frames(
             output_dir, expected_frame_count=expected_frame_count, timeout_ms=RENDER_TIMEOUT_MS
         )
