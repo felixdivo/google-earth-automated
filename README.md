@@ -66,12 +66,18 @@ work unattended.
 Two things make this harder than a normal Playwright script:
 
 - **Earth Studio grants the output folder through the browser's File System
-  Access API**, which Chromium serves as a *native OS dialog* and native
-  permission bubbles — outside Playwright's control entirely.
-  `studio_render` drives those with `xdotool` instead (see
-  `select_output_folder()` and `click_permission_bubble()`), which depends on
-  the devcontainer's D-Bus/portal/window-manager stack and on the
-  `/dev/fuse` + `CAP_SYS_ADMIN` grant described in Security below.
+  Access API**, which Chromium serves as a *native OS dialog* — outside
+  Playwright's control entirely. `studio_render` drives it with `xdotool`
+  instead (see `select_output_folder()`), which depends on the devcontainer's
+  D-Bus/portal/window-manager stack and on the `/dev/fuse` + `CAP_SYS_ADMIN`
+  grant described in Security below. The *permission* prompts that normally
+  follow ("Allow this site to view and copy files?", "Save changes to
+  <folder>?") are pre-approved by a Chromium managed-policy file that
+  `.devcontainer/setup.sh` writes to `/etc/chromium/policies/managed/`, so
+  there is nothing to click through. Earlier revisions clicked those bubbles
+  at a hardcoded screen coordinate; that broke silently whenever the window
+  geometry or UI font metrics shifted, which is exactly what a devcontainer
+  rebuild can change.
 - **Earth Studio's UI is an undocumented, JS-heavy SPA**, so
   `studio_render`'s selectors are best-effort and may need adjusting after
   a live run — they live in `google_earth_automated/earth_studio_browser.py`
@@ -149,6 +155,11 @@ automation work. Worth knowing before you run it:
   removed) — this is what gets past Google's bot-detection at login, but it
   also makes the browser indistinguishable from a real user session to any
   other site it visits.
+- **File System Access is pre-granted to every site**
+  (`/etc/chromium/policies/managed/earth-studio.json`) — this browser profile
+  will hand read/write access to a chosen folder to any page that asks,
+  without prompting. It exists only to drive Earth Studio; don't browse with
+  this profile.
 - **Chromium runs with `--no-sandbox`** — an automatic consequence of running
   as root, and it removes Chromium's own internal process-sandboxing against
   malicious content it renders.
