@@ -151,6 +151,7 @@ def wait_for_frames(
     timeout_ms: int,
     quiet_period_s: float = 60.0,
     poll_interval_s: float = 2.0,
+    progress_interval_s: float = 30.0,
 ) -> None:
     """Local Image Sequence rendering writes frames directly into output_dir
     (in a project-named subfolder) via the File System Access API -- there's
@@ -162,12 +163,16 @@ def wait_for_frames(
     GPU) can take well over a minute per frame -- a short quiet period would
     mistake "still rendering the next frame" for "done".
     """
-    deadline = time.monotonic() + timeout_ms / 1000
+    started = time.monotonic()
+    deadline = started + timeout_ms / 1000
     last_count = -1
     stable_since = None
+    last_report = 0.0
+    total = expected_frame_count or "?"
     while time.monotonic() < deadline:
         count = len(list(output_dir.rglob("*.jpg"))) + len(list(output_dir.rglob("*.jpeg")))
         if expected_frame_count is not None and count >= expected_frame_count:
+            print(f"Rendered {count}/{total} frames", flush=True)
             return
         if count != last_count:
             last_count = count
@@ -178,8 +183,16 @@ def wait_for_frames(
             and time.monotonic() - stable_since >= quiet_period_s
         ):
             return
+        # Without this the only output for up to three hours is silence, which
+        # looks identical whether frames are landing slowly or not at all.
+        now = time.monotonic()
+        if now - last_report >= progress_interval_s:
+            last_report = now
+            print(f"Rendered {count}/{total} frames ({now - started:.0f}s elapsed)", flush=True)
         time.sleep(poll_interval_s)
-    raise TimeoutError(f"no stable output detected in {output_dir} within the timeout")
+    raise TimeoutError(
+        f"no stable output detected in {output_dir} within the timeout (last count: {last_count})"
+    )
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -234,7 +247,7 @@ def render(
             context.close()
             sys.exit("error: not logged in -- run `uv run studio-login` first")
 
-        print(gpu_status(page))
+        print(gpu_status(page), flush=True)
 
         page.click(IMPORT_TOGGLE)
         with page.expect_file_chooser() as file_chooser_info:
@@ -257,7 +270,7 @@ def render(
         )
 
         context.close()
-        print(f"Rendered frames written to {output_dir}/")
+        print(f"Rendered frames written to {output_dir}/", flush=True)
 
 
 def main(argv: list[str] | None = None) -> None:
