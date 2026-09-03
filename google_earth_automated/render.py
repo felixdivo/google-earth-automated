@@ -78,7 +78,14 @@ RENDER_TIMEOUT_MS = (
     3 * 60 * 60 * 1000
 )  # SwiftShader software rendering (no real GPU here) is slow -- give it room
 
+# Upper bound on how long an import may take to show up in the editor, and the
+# blind wait wait_for_project_loaded() falls back to when it never does.
 PROJECT_LOAD_WAIT_MS = 8000  # importing a project re-renders the whole scene
+# Breathing room after the imported project's name appears, before touching the
+# Render button. The name can land while the SPA is still rebuilding around it,
+# and RENDER_BUTTON is present in the toolbar the whole time -- so Playwright's
+# own actionability wait offers no protection against clicking too early.
+SCENE_SETTLE_MS = 1500
 
 
 def _xdotool(*args: str) -> str:
@@ -160,6 +167,45 @@ def select_output_folder(page: Page, output_dir: Path, *, dialog_timeout_s: floa
     )
 
 
+def project_name_of(esp_file: Path) -> str:
+    """The name Earth Studio shows for this project once imported -- what
+    wait_for_project_loaded() watches for. settings.name is what the app
+    actually displays; the filename is only a fallback for a hand-edited .esp
+    whose two disagree.
+    """
+    try:
+        return json.loads(esp_file.read_text())["settings"]["name"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return esp_file.stem
+
+
+def wait_for_project_loaded(
+    page: Page, project_name: str | None, *, timeout_ms: int = PROJECT_LOAD_WAIT_MS
+) -> None:
+    """Wait for a just-imported project to appear in the editor.
+
+    Importing re-renders the whole scene and Earth Studio fires no load event,
+    so this used to be a blind sleep of the full timeout on every render --
+    the single largest avoidable cost in `earth serve`'s per-request path. The
+    project's own name showing up is the earliest signal that the import
+    landed: `earth serve` names every per-request project uniquely (frame_0,
+    frame_1, ...), so it is a fresh name each time.
+
+    project_name is None when the caller found that name already on screen
+    before importing (see Session.render_esp) -- then its presence proves
+    nothing and only the blind wait is left. Same fallback if the name never
+    shows: a UI change costs the old behaviour, not a broken render.
+    """
+    if project_name is None:
+        page.wait_for_timeout(timeout_ms)
+        return
+    try:
+        page.get_by_text(project_name).first.wait_for(timeout=timeout_ms)
+    except PlaywrightError:
+        return  # never appeared -- the wait above already burned the full timeout
+    page.wait_for_timeout(SCENE_SETTLE_MS)
+
+
 def _frames_on_disk(output_dir: Path) -> int:
     return len(list(output_dir.rglob("*.jpg"))) + len(list(output_dir.rglob("*.jpeg")))
 
@@ -195,36 +241,79 @@ def _accept_native_prompt(window_id: str | None, *, click_fallback: bool) -> Non
     time.sleep(0.6)
 
 
-def start_render(page: Page, *, attempts: int = 8) -> None:
-    """Click Start and clear the native File System Access prompts that follow.
-
-    Earth Studio raises up to two of them -- "Allow this site to view and copy
-    files?" then "Save changes to <dir>?" -- and each blocks the render until
-    answered. They are browser chrome, not page DOM, so _accept_native_prompt()
-    clears them blind; the one reliable DOM signal drives the loop: while a
-    prompt is up the render *dialog* (with its Start button) is still on
-    screen, and it's replaced by the progress view the moment the render
-    actually begins. So: click Start, and if the button is still there shortly
-    after, a prompt is blocking -- accept it and click again. A grant persists
-    in the profile, so later runs with the same folder see no prompt and the
-    first click is enough.
+def _render_started(page: Page, output_dir: Path, baseline_frames: int) -> bool:
+    """Whether the render is underway. Two independent signals, either suffices:
+    a frame has landed on disk (unambiguous and selector-free), or the Start
+    button has gone -- Earth Studio swaps the render dialog for its progress
+    view once the render really begins.
     """
-    window_id = _find_window(BROWSER_WINDOW_TITLE, timeout_s=10.0)
+    if _frames_on_disk(output_dir) > baseline_frames:
+        return True
+    try:
+        return not page.locator(START_RENDER_BUTTON).first.is_visible()
+    except PlaywrightError:
+        return True  # detached entirely -> the dialog is gone
 
-    for attempt in range(attempts):
-        try:
-            page.click(START_RENDER_BUTTON, timeout=5000)
-        except PlaywrightError:
-            return  # button already gone -> render is running
-        try:
-            page.wait_for_selector(START_RENDER_BUTTON, state="hidden", timeout=6000)
+
+def start_render(
+    page: Page,
+    output_dir: Path,
+    *,
+    expect_prompts: bool,
+    prompt_grace_s: float = 5.0,
+    max_prompts: int = 4,
+    timeout_s: float = 120.0,
+) -> None:
+    """Click Start, and wait for the render to actually begin.
+
+    Granting the output folder raises up to two native File System Access
+    prompts -- "Allow this site to view and copy files?" then "Save changes to
+    <dir>?" -- and each blocks the render until answered. They are browser
+    chrome rather than page DOM, so _accept_native_prompt() clears them blind.
+
+    But they only ever follow a *fresh* grant: Chromium remembers it against
+    the profile, so every later render of the same folder -- including every
+    `earth serve` request after the first -- sees no prompt at all. expect_prompts
+    (threaded down from Session._folder_grant_needed()) says which case this is,
+    and the warm path never touches the keyboard or hunts for an X window.
+
+    Progress is judged by _render_started() rather than by the Start button
+    going hidden. That mattered: Earth Studio keeps the button on screen right
+    through "Preparing to render...", so waiting for it to hide always timed
+    out at least twice, and the old loop's fixed 6s timeout plus ~3s of
+    _accept_native_prompt() sleeps per attempt turned a ~10s prep into ~21s and
+    fired stray Tab/Enter at the browser while it was working.
+    """
+    baseline_frames = _frames_on_disk(output_dir)
+    # Only worth resolving when there may be a prompt to aim at: with no
+    # display (headless) this search burns its whole timeout and finds nothing.
+    window_id = _find_window(BROWSER_WINDOW_TITLE, timeout_s=10.0) if expect_prompts else None
+
+    try:
+        page.click(START_RENDER_BUTTON, timeout=5000)
+    except PlaywrightError:
+        return  # button already gone -> render is running
+
+    deadline = time.monotonic() + timeout_s
+    prompts_cleared = 0
+    next_prompt_at = time.monotonic() + prompt_grace_s
+    while time.monotonic() < deadline:
+        if _render_started(page, output_dir, baseline_frames):
             return
-        except PlaywrightError:
-            # Start still there -> a prompt is blocking.
-            _accept_native_prompt(window_id, click_fallback=attempt >= 2)
+        if expect_prompts and prompts_cleared < max_prompts and time.monotonic() >= next_prompt_at:
+            _accept_native_prompt(window_id, click_fallback=prompts_cleared >= 1)
+            prompts_cleared += 1
+            next_prompt_at = time.monotonic() + prompt_grace_s
+            # The prompt swallowed the first click -- Start is still there.
+            try:
+                page.click(START_RENDER_BUTTON, timeout=2000)
+            except PlaywrightError:
+                pass
+        time.sleep(0.25)
 
     raise RuntimeError(
-        "render did not start after accepting the File System Access prompts -- "
+        f"render did not start within {timeout_s:.0f}s "
+        f"({'prompts were cleared' if expect_prompts else 'no prompts expected'}) -- "
         "the prompt layout or Start selector may have changed"
     )
 
@@ -232,18 +321,22 @@ def start_render(page: Page, *, attempts: int = 8) -> None:
 def _close_render_panel(page: Page) -> None:
     """Dismiss the render panel/progress view after a render finishes, so a later
     render on the same warm page starts from a clean editor. Best-effort and never
-    raises: CLOSE_RENDER_PANEL_BUTTON is an unverified selector guess, so this
-    falls back to Escape. Worst case the panel is still open and the next
-    render's clicks land on it instead -- fix the same way as any other selector
-    here, by watching a live run.
+    raises. Worst case the panel is still open and the next render's clicks land
+    on it instead -- fix the same way as any other selector here, by watching a
+    live run.
+
+    Escape goes first because it is instant and is what actually worked.
+    CLOSE_RENDER_PANEL_BUTTON stays as a backstop but on a short timeout: it is
+    an unverified guess, so on every render it most likely just waits out its
+    own timeout matching nothing -- 3s of that per `earth serve` request was
+    pure overhead.
     """
     try:
-        page.click(CLOSE_RENDER_PANEL_BUTTON, timeout=3000)
-        return
+        page.keyboard.press("Escape")
     except PlaywrightError:
         pass
     try:
-        page.keyboard.press("Escape")
+        page.click(CLOSE_RENDER_PANEL_BUTTON, timeout=800)
     except PlaywrightError:
         pass
 
@@ -258,7 +351,7 @@ def wait_for_frames(
     expected_frame_count: int | None,
     timeout_ms: int,
     quiet_period_s: float = 60.0,
-    poll_interval_s: float = 2.0,
+    poll_interval_s: float = 0.5,
     progress_interval_s: float = 30.0,
     progress: Callable[[str], None] = _print_progress,
 ) -> None:
@@ -376,20 +469,36 @@ class Session:
         """
         page = self.page
 
+        # Checked before the import, because the name appearing *afterwards* is
+        # only a load signal if it wasn't there to begin with -- a recents list
+        # or a re-import of the same project would otherwise match instantly and
+        # send us on to the Render button mid-load.
+        project_name = project_name_of(esp_file)
+        try:
+            if page.get_by_text(project_name).count() > 0:
+                project_name = None
+        except PlaywrightError:
+            project_name = None
+
         page.click(IMPORT_TOGGLE)
         with page.expect_file_chooser() as file_chooser_info:
             page.click(IMPORT_MENU_ITEM)
         file_chooser_info.value.set_files(str(esp_file))
-        page.wait_for_timeout(PROJECT_LOAD_WAIT_MS)
+        wait_for_project_loaded(page, project_name)
 
         page.click(RENDER_BUTTON)
-        page.wait_for_timeout(1000)
+        # No fixed wait before this one: unlike RENDER_BUTTON (permanently in
+        # the toolbar), the format option only exists once the panel is open,
+        # so Playwright's actionability wait is a real signal here.
         page.click(FORMAT_IMAGE_SEQUENCE_OPTION)
 
-        if self._folder_grant_needed(output_dir):
+        # The native prompts start_render() may have to clear only follow a
+        # fresh grant, so the two decisions are the same decision.
+        grant_needed = self._folder_grant_needed(output_dir)
+        if grant_needed:
             select_output_folder(page, output_dir)
             self._granted_output_dir = output_dir
-        start_render(page)
+        start_render(page, output_dir, expect_prompts=grant_needed)
         wait_for_frames(
             output_dir,
             expected_frame_count=expected_frame_count,
