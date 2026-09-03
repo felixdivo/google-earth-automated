@@ -28,6 +28,8 @@ uv run esp-builder --lat 50.1070 --lon 8.6633 --ground-alt 115 \
     --radius 200 --camera-height 30 --name frankfurt_hauptbahnhof_orbit
 ```
 
+The `.esp` is written to `out/<name>.esp` by default (override with `-o`).
+
 Run `uv run esp-builder --help` for all options (waypoint count, start
 bearing, leg duration, frame rate, resolution, open vs. closed loop, ...).
 
@@ -50,7 +52,7 @@ session is reused by every later render.
 Then, for each project:
 
 ```
-uv run studio-render frankfurt_hauptbahnhof_orbit.esp
+uv run studio-render out/frankfurt_hauptbahnhof_orbit.esp
 ```
 
 This imports the project, sets the render format to Image sequence (JPEG —

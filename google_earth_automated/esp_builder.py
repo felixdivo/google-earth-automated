@@ -13,6 +13,7 @@ import argparse
 import json
 import math
 import sys
+from pathlib import Path
 
 EARTH_RADIUS_M = 6371000.0
 
@@ -261,6 +262,8 @@ def build_orbit_esp(
 
 
 def write_esp(esp_dict, path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         json.dump(esp_dict, f, indent=2)
 
@@ -328,7 +331,7 @@ def _build_cli_parser():
     parser.add_argument(
         "-o",
         "--output",
-        help="Output .esp file path (default: <name>.esp).",
+        help="Output .esp file path (default: out/<name>.esp).",
     )
     return parser
 
@@ -344,7 +347,7 @@ def main(argv=None):
         console.print("[bold red]Error:[/] --waypoints must be at least 2.")
         return 1
 
-    output_path = args.output or f"{args.name}.esp"
+    output_path = args.output or f"out/{args.name}.esp"
 
     target = {"lat": args.lat, "lon": args.lon, "alt_m": args.ground_alt}
 
