@@ -8,6 +8,7 @@ needs a display (X11/VNC forwarded into the container, or run natively on the
 host) -- this devcontainer has no display/GPU by default.
 """
 
+from contextlib import suppress
 from pathlib import Path
 
 from playwright.sync_api import BrowserContext, Page, Playwright
@@ -72,6 +73,22 @@ def launch_context(playwright: Playwright, *, headless: bool = False) -> Browser
 def first_page(context: BrowserContext) -> Page:
     """Return the context's initial tab, or open one if it has none."""
     return context.pages[0] if context.pages else context.new_page()
+
+
+def close_quietly(context: BrowserContext) -> None:
+    """Close a browser context on the way out, whatever state it is in.
+
+    Every command closes its context from a `finally`, so this also runs on
+    the interrupt path -- and there a Ctrl-C in a terminal went to the whole
+    foreground process group, so Playwright's node driver and Chromium got it
+    too and are already on their way out. Closing then raises a plain
+    `Exception("Connection closed while reading from the driver")` rather than
+    a PlaywrightError, hence the broad suppress: the browser being gone is the
+    outcome this function wanted anyway, and a failure to close must never
+    replace the interrupt that caused it.
+    """
+    with suppress(Exception):
+        context.close()
 
 
 # Renderer names Chromium reports when it fell back to CPU rasterization

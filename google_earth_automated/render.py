@@ -39,7 +39,7 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Self
 
 import typer
 from playwright.sync_api import Error as PlaywrightError
@@ -47,6 +47,7 @@ from playwright.sync_api import Page, Playwright, sync_playwright
 
 from .browser import (
     EARTH_STUDIO_URL,
+    close_quietly,
     first_page,
     gpu_status,
     launch_context,
@@ -426,21 +427,33 @@ class Session:
 
     def __init__(self, playwright: Playwright, *, headless: bool = False):
         self.context = launch_context(playwright, headless=headless)
-        self.page = first_page(self.context)
-        # Earth Studio can raise native window.confirm()/alert() dialogs (e.g.
-        # "discard unsaved changes?" when importing over a loaded project) --
-        # these are browser chrome, not page DOM, so this is the only way
-        # Playwright can answer them. Registered once up front to cover every
-        # render this session makes.
-        self.page.on("dialog", lambda dialog: dialog.accept())
-        self.page.goto(EARTH_STUDIO_URL)
+        # From here on the browser is running, so every exit -- a failed
+        # login check, a Ctrl-C during the SPA load, which is where an
+        # interrupt most often lands -- has to take it down with it.
+        try:
+            self.page = first_page(self.context)
+            # Earth Studio can raise native window.confirm()/alert() dialogs (e.g.
+            # "discard unsaved changes?" when importing over a loaded project) --
+            # these are browser chrome, not page DOM, so this is the only way
+            # Playwright can answer them. Registered once up front to cover every
+            # render this session makes.
+            self.page.on("dialog", lambda dialog: dialog.accept())
+            self.page.goto(EARTH_STUDIO_URL)
 
-        if "studio" not in self.page.url:
-            self.context.close()
-            raise NotLoggedInError("not logged in -- run `uv run earth login` first")
+            if "studio" not in self.page.url:
+                raise NotLoggedInError("not logged in -- run `uv run earth login` first")
 
-        print(gpu_status(self.page), flush=True)
+            print(gpu_status(self.page), flush=True)
+        except BaseException:  # including KeyboardInterrupt
+            self.close()
+            raise
         self._granted_output_dir: Path | None = None
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        self.close()
 
     def _folder_grant_needed(self, output_dir: Path) -> bool:
         if self._granted_output_dir != output_dir:
@@ -508,23 +521,25 @@ class Session:
         _close_render_panel(page)
 
     def close(self) -> None:
-        self.context.close()
+        """Shut the browser down. Idempotent, and safe on a session that is
+        already dying -- it runs from the interrupt path too (see
+        close_quietly()).
+        """
+        close_quietly(self.context)
 
 
 def render(
     esp_file: Path, output_dir: Path, *, headless: bool, expected_frame_count: int | None
 ) -> None:
-    with sync_playwright() as playwright:
-        session = Session(playwright, headless=headless)
-        try:
-            session.render_esp(
-                esp_file,
-                output_dir,
-                expected_frame_count=expected_frame_count,
-                timeout_ms=RENDER_TIMEOUT_MS,
-            )
-        finally:
-            session.close()
+    with sync_playwright() as playwright, Session(playwright, headless=headless) as session:
+        session.render_esp(
+            esp_file,
+            output_dir,
+            expected_frame_count=expected_frame_count,
+            timeout_ms=RENDER_TIMEOUT_MS,
+        )
+    # Only on success: an interrupt half-way through leaves however many frames
+    # Earth Studio had already written, which is not a completed render.
     print(f"Rendered frames written to {output_dir}/", flush=True)
 
 

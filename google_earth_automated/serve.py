@@ -243,40 +243,45 @@ def command(
         except NotLoggedInError as e:
             sys.exit(f"error: {e}")
 
-        print("Warming up: rendering one throwaway frame...", flush=True)
+        # Everything past this point owns a live browser and a scratch
+        # directory, and any of it can be cut short by Ctrl-C (or SIGTERM,
+        # e.g. `docker stop`) -- during the warmup, while idle, or mid-render
+        # inside a request. All three exit through this one finally.
         try:
-            render_frame(
-                session,
-                lat=0.0,
-                lon=0.0,
-                alt=1000.0,
-                heading=0.0,
-                tilt=45.0,
-                width=width,
-                height=height,
-                timeout_s=frame_timeout,
-            )
-        except RENDER_ERRORS as e:
-            session.close()
-            sys.exit(f"error: warmup render failed: {e}")
+            print("Warming up: rendering one throwaway frame...", flush=True)
+            try:
+                render_frame(
+                    session,
+                    lat=0.0,
+                    lon=0.0,
+                    alt=1000.0,
+                    heading=0.0,
+                    tilt=45.0,
+                    width=width,
+                    height=height,
+                    timeout_s=frame_timeout,
+                )
+            except RENDER_ERRORS as e:
+                sys.exit(f"error: warmup render failed: {e}")
 
-        _FrameRequestHandler.session = session
-        _FrameRequestHandler.default_width = width
-        _FrameRequestHandler.default_height = height
-        _FrameRequestHandler.frame_timeout_s = frame_timeout
+            _FrameRequestHandler.session = session
+            _FrameRequestHandler.default_width = width
+            _FrameRequestHandler.default_height = height
+            _FrameRequestHandler.frame_timeout_s = frame_timeout
 
-        server = HTTPServer((host, port), _FrameRequestHandler)
-        print(
-            f"Listening on http://{host}:{port} -- "
-            "GET /frame?lat=..&lon=..&alt=..&heading=..&tilt=..",
-            flush=True,
-        )
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            pass
+            # `with` closes the listening socket on the way out, so the port is
+            # free again the moment the server stops.
+            with HTTPServer((host, port), _FrameRequestHandler) as server:
+                print(
+                    f"Listening on http://{host}:{port} -- "
+                    "GET /frame?lat=..&lon=..&alt=..&heading=..&tilt=..",
+                    flush=True,
+                )
+                try:
+                    server.serve_forever()
+                except KeyboardInterrupt:
+                    pass  # the signal handler already said so
         finally:
-            server.server_close()
             session.close()
             shutil.rmtree(STAGING_DIR, ignore_errors=True)
             print("Server stopped.", flush=True)

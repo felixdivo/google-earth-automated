@@ -10,17 +10,19 @@ use, 1 otherwise.
 
 from playwright.sync_api import sync_playwright
 
-from .browser import first_page, gpu_status, launch_context
+from .browser import close_quietly, first_page, gpu_status, launch_context
 
 
 def command() -> None:
     """Report whether Chromium's WebGL is hardware-accelerated here."""
     with sync_playwright() as playwright:
         context = launch_context(playwright, headless=True)
-        page = first_page(context)
-        page.goto("about:blank")
-        status = gpu_status(page)
-        context.close()
+        try:
+            page = first_page(context)
+            page.goto("about:blank")
+            status = gpu_status(page)
+        finally:
+            close_quietly(context)
 
     print(status)
     raise SystemExit(0 if status.startswith("GPU: in use") else 1)
