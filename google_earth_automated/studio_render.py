@@ -155,43 +155,51 @@ def _frames_on_disk(output_dir: Path) -> int:
     return len(list(output_dir.rglob("*.jpg"))) + len(list(output_dir.rglob("*.jpeg")))
 
 
-def start_render(page: Page, output_dir: Path, *, attempts: int = 4) -> None:
+def _accept_native_prompt(window_id: str | None) -> None:
+    """Accept a native File System Access prompt from the keyboard: focus
+    defaults to the dismiss button, one Tab reaches the grant button ("Allow"
+    / "Save changes"), Enter confirms."""
+    if window_id is None:
+        return
+    _xdotool("windowactivate", "--sync", window_id)
+    time.sleep(0.3)
+    _xdotool("key", "--window", window_id, "Tab")
+    time.sleep(0.3)
+    _xdotool("key", "--window", window_id, "Return")
+    time.sleep(1.0)
+
+
+def start_render(page: Page, *, attempts: int = 6) -> None:
     """Click Start and clear the native File System Access prompts that follow.
 
     Earth Studio raises up to two of them -- "Allow this site to view and copy
     files?" then "Save changes to <dir>?" -- and each blocks the render until
-    answered. They are browser chrome, not page DOM, so they are accepted from
-    the keyboard: focus defaults to the dismiss button, one Tab moves to the
-    grant button ("Allow" / "Save changes"), Enter confirms. Clicking Start
-    again after each grant advances to the next prompt (and, once both are
-    granted, actually starts the render). A grant persists in the browser
-    profile, so on later runs with the same output folder no prompt appears
-    and the first click is enough.
+    answered. They are browser chrome, not page DOM, so xdotool can't see
+    them; instead this keys through them blindly, using the one DOM signal
+    that is reliable: while a prompt is up the render *dialog* (with its Start
+    button) is still on screen, and it's replaced by the progress view the
+    moment the render actually begins. So: click Start, and if the button is
+    still there shortly after, a prompt is blocking -- accept it and click
+    again. A grant persists in the profile, so later runs with the same folder
+    see no prompt and the first click is enough.
     """
-    wid = _find_window(BROWSER_WINDOW_TITLE, timeout_s=10.0)
-    baseline = _frames_on_disk(output_dir)  # a re-render into a populated dir
+    window_id = _find_window(BROWSER_WINDOW_TITLE, timeout_s=10.0)
 
     for _ in range(attempts):
         try:
             page.click(START_RENDER_BUTTON, timeout=5000)
         except PlaywrightError:
-            pass  # button gone means the render already started
-        time.sleep(2.5)
-        if _frames_on_disk(output_dir) > baseline:
+            return  # button already gone -> render is running
+        try:
+            page.wait_for_selector(START_RENDER_BUTTON, state="hidden", timeout=6000)
             return
-        if wid is not None:
-            _xdotool("windowactivate", "--sync", wid)
-            time.sleep(0.3)
-            _xdotool("key", "--window", wid, "Tab")
-            time.sleep(0.3)
-            _xdotool("key", "--window", wid, "Return")
-        time.sleep(1.5)
+        except PlaywrightError:
+            _accept_native_prompt(window_id)  # Start still there -> prompt blocking
 
-    if _frames_on_disk(output_dir) <= baseline:
-        raise RuntimeError(
-            "render did not start after accepting the File System Access prompts -- "
-            "the prompt layout or Start selector may have changed"
-        )
+    raise RuntimeError(
+        "render did not start after accepting the File System Access prompts -- "
+        "the prompt layout or Start selector may have changed"
+    )
 
 
 def wait_for_frames(
@@ -310,7 +318,7 @@ def render(
         page.click(FORMAT_IMAGE_SEQUENCE_OPTION)
 
         select_output_folder(page, output_dir)
-        start_render(page, output_dir)
+        start_render(page)
         wait_for_frames(
             output_dir, expected_frame_count=expected_frame_count, timeout_ms=RENDER_TIMEOUT_MS
         )

@@ -51,6 +51,11 @@ def launch_context(playwright: Playwright, *, headless: bool = False) -> Browser
         # CDI); without a device it harmlessly falls back to SwiftShader.
         # --ignore-gpu-blocklist is required because Chromium blocklists the
         # headless GPU path by default.
+        #
+        # --hide-crash-restore-bubble: an unclean exit (a killed container
+        # mid-render) otherwise leaves a "Restore pages?" bubble that steals
+        # focus from the keyboard input studio_render aims at the render
+        # dialog's permission prompts.
         args=[
             "--disable-blink-features=AutomationControlled",
             "--test-type",
@@ -58,6 +63,7 @@ def launch_context(playwright: Playwright, *, headless: bool = False) -> Browser
             "--use-angle=vulkan",
             "--enable-features=Vulkan",
             "--ignore-gpu-blocklist",
+            "--hide-crash-restore-bubble",
         ],
         ignore_default_args=["--enable-automation"],
     )
