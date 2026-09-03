@@ -22,6 +22,15 @@ Requires a logged-in session -- run `earth login` first.
 
     curl -o frame.jpg \\
         'http://localhost:8000/frame?lat=50.1070&lon=8.6633&alt=145&heading=180&tilt=70'
+
+Binds 127.0.0.1 by default -- there's no auth on this API, so the default
+keeps it off the network entirely. Running through `./run.sh` (real Docker
+port publishing, which routes through the container's bridge interface
+rather than its loopback) needs `--host 0.0.0.0` for `--publish` to have
+anything to reach; `run.sh` binds that published port to the *host's* own
+127.0.0.1 (see run.sh), so it stays host-local either way. The devcontainer's
+own port forwarding proxies inside the container's network namespace, so the
+127.0.0.1 default works there unchanged.
 """
 
 import shutil
@@ -200,7 +209,16 @@ class _FrameRequestHandler(BaseHTTPRequestHandler):
 
 
 def command(
-    host: Annotated[str, typer.Option(help="Interface to bind to.")] = "0.0.0.0",
+    host: Annotated[
+        str,
+        typer.Option(
+            help=(
+                "Interface to bind to. Defaults to loopback-only since there's no auth on "
+                "this API; pass 0.0.0.0 to make it reachable from outside the container "
+                "(needed for ./run.sh's Docker port publishing -- see serve.py's docstring)."
+            ),
+        ),
+    ] = "127.0.0.1",
     port: Annotated[int, typer.Option(help="Port to listen on.")] = 8000,
     headless: Annotated[
         bool,

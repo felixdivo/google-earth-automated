@@ -7,12 +7,15 @@
 #   ./run.sh uv run earth login                # one-time Google login (see below)
 #   ./run.sh uv run earth build --lat ... --lon ...
 #   ./run.sh uv run earth render project.esp --headless
-#   ./run.sh uv run earth serve                # single-frame render API on :8000
+#   ./run.sh uv run earth serve --host 0.0.0.0 # single-frame render API on :8000
 #
 # The whole repo is bind-mounted at /workspace, so generated .esp files,
 # rendered frames under out/, and the login profile under .auth/ all land back
 # on the host. noVNC is forwarded on http://localhost:6080/vnc.html for the
-# headed `earth login` step, and `earth serve`'s API on http://localhost:8000.
+# headed `earth login` step. `earth serve` binds loopback-only by default (see
+# its --help), which real Docker port publishing can't route to at all -- pass
+# --host 0.0.0.0 to make it reachable, as above; the --publish below then
+# limits that to the host's own http://localhost:8000, not the network.
 #
 # GPU passthrough uses CDI (Docker >= 25). GPUS is a comma-separated list of
 # device indices from `nvidia-ctk cdi list`, or "all":
@@ -46,6 +49,6 @@ exec docker run --rm -it \
     --device /dev/fuse \
     --cap-add SYS_ADMIN \
     --publish 6080:6080 \
-    --publish 8000:8000 \
+    --publish 127.0.0.1:8000:8000 \
     --volume "$REPO":/workspace \
     "$IMAGE" "${@:-bash}"

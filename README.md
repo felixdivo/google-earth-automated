@@ -88,9 +88,11 @@ optionally `width`/`height`, and responds with the rendered frame as
 against the tens of seconds a one-off `earth render` needs to launch a
 browser and log in. `GET /health` reports readiness. The server keeps no
 frames on disk between requests — nothing is written to `out/` or anywhere
-else in the repo — and it binds `0.0.0.0` by default, so treat it as
-trusted-network-only: it's an unauthenticated endpoint driving a logged-in
-Google session. See `uv run earth serve --help` for the full option list.
+else in the repo — and, since there's no auth on this endpoint and it drives
+a logged-in Google session, it binds `127.0.0.1` by default (`--host` to
+change that). See `uv run earth serve --help` for the full option list, and
+*Running with Docker* below for reaching it from the host when running in a
+container.
 
 ### Running with Docker
 
@@ -105,8 +107,16 @@ and — on a Linux host with the
 ./run.sh uv run earth login                        # one-time Google login (via noVNC)
 ./run.sh uv run earth build --lat ... --lon ...     # generate a project
 ./run.sh uv run earth render <project>.esp
-./run.sh uv run earth serve                         # single-frame render API on :8000
+./run.sh uv run earth serve --host 0.0.0.0           # single-frame render API on :8000
 ```
+
+`earth serve`'s loopback-only default means *inside* the container -- real
+Docker port publishing (`--publish`, not the devcontainer's own forwarding)
+routes through the container's bridge network rather than its loopback, so
+without `--host 0.0.0.0` there's nothing for `./run.sh`'s `--publish` to
+reach at all. That publish is itself bound to the host's own `127.0.0.1`
+(see `run.sh`), so the combination still only exposes
+`http://localhost:8000` on the host, not the network.
 
 The `GPUS` variable picks which GPUs to expose — a comma-separated list of CDI
 device indices (`nvidia-ctk cdi list`), or `all`; the default is the last two.
@@ -216,8 +226,9 @@ automation work. Worth knowing before you run it:
   without re-authenticating.
 - **`earth serve` is unauthenticated** — anyone who can reach its port can
   drive the logged-in Earth Studio session to render frames. It binds
-  `0.0.0.0` by default; only expose it on a trusted network, or put it behind
-  your own auth/reverse proxy.
+  `127.0.0.1` by default for exactly this reason; only pass `--host 0.0.0.0`
+  (needed under Docker, see *Running with Docker* above) on a trusted
+  network, or put it behind your own auth/reverse proxy.
 
 ## License
 
