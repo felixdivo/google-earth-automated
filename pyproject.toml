@@ -4,13 +4,10 @@ version = "0.1.0"
 requires-python = ">=3.13"
 license = "MIT"
 authors = [{ name = "Felix Divo", email = "felix.divo@tu-darmstadt.de" }]
-dependencies = ["rich>=13", "playwright>=1.47,<2"]
+dependencies = ["rich>=13", "playwright>=1.47,<2", "typer>=0.15,<1"]
 
 [project.scripts]
-esp-builder = "google_earth_automated.esp_builder:main"
-studio-login = "google_earth_automated.studio_login:main"
-studio-render = "google_earth_automated.studio_render:main"
-studio-gpu-check = "google_earth_automated.gpu_check:main"
+earth = "google_earth_automated.cli:app"
 
 [build-system]
 requires = ["hatchling"]

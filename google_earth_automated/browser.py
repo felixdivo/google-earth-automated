@@ -1,7 +1,7 @@
 """Shared Playwright plumbing for driving the Google Earth Studio web app.
 
 Uses a persistent browser profile (see PROFILE_DIR) so a login performed once
-via studio-login is reused by studio-render. Headed by default: headless
+via `earth login` is reused by `earth render`. Headed by default: headless
 Chromium needs extra GPU/WebGL flags to render Earth Studio's canvas correctly,
 and the first live runs need to be visually debuggable anyway. A headed run
 needs a display (X11/VNC forwarded into the container, or run natively on the
@@ -54,7 +54,7 @@ def launch_context(playwright: Playwright, *, headless: bool = False) -> Browser
         #
         # --hide-crash-restore-bubble: an unclean exit (a killed container
         # mid-render) otherwise leaves a "Restore pages?" bubble that steals
-        # focus from the keyboard input studio_render aims at the render
+        # focus from the keyboard input the render command aims at the render
         # dialog's permission prompts.
         args=[
             "--disable-blink-features=AutomationControlled",

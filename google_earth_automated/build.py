@@ -5,15 +5,18 @@ and value-encoding formulas were cross-referenced from two independent community
 implementations and a real Earth-Studio-exported template, so it should open
 correctly but may need small manual tweaks in-app.
 
-Also doubles as a CLI (`esp-builder`) for generating a circular orbit .esp
-around a single point of interest.
+Also doubles as the `earth build` subcommand for generating a circular orbit
+.esp around a single point of interest.
 """
 
-import argparse
 import json
 import math
-import sys
 from pathlib import Path
+from typing import Annotated
+
+import typer
+from rich.console import Console
+from rich.table import Table
 
 EARTH_RADIUS_M = 6371000.0
 
@@ -268,99 +271,60 @@ def write_esp(esp_dict, path):
         json.dump(esp_dict, f, indent=2)
 
 
-def _build_cli_parser():
-    parser = argparse.ArgumentParser(
-        prog="esp-builder",
-        description="Generate a Google Earth Studio .esp project that orbits a point of interest.",
-    )
-    parser.add_argument("--lat", type=float, required=True, help="Target latitude, in degrees.")
-    parser.add_argument("--lon", type=float, required=True, help="Target longitude, in degrees.")
-    parser.add_argument(
-        "--ground-alt",
-        type=float,
-        default=0.0,
-        help="Target's ground elevation, in meters above sea level (default: 0).",
-    )
-    parser.add_argument(
-        "--radius",
-        type=float,
-        default=200.0,
-        help="Orbit radius around the target, in meters (default: 200).",
-    )
-    parser.add_argument(
-        "--camera-height",
-        type=float,
-        default=30.0,
-        help="Camera height above the target's ground elevation, in meters (default: 30).",
-    )
-    parser.add_argument(
-        "--waypoints",
-        type=int,
-        default=3,
-        help="Number of camera waypoints spaced evenly around the orbit (default: 3).",
-    )
-    parser.add_argument(
-        "--start-bearing",
-        type=float,
-        default=0.0,
-        help="Compass bearing of the first waypoint, in degrees (default: 0).",
-    )
-    parser.add_argument(
-        "--seconds-per-leg",
-        type=float,
-        default=5.0,
-        help="Flight time between consecutive waypoints, in seconds (default: 5).",
-    )
-    parser.add_argument(
-        "--open-loop",
-        action="store_true",
-        help="Don't fly back to the first waypoint at the end.",
-    )
-    parser.add_argument(
-        "--frame-rate", type=int, default=30, help="Project frame rate (default: 30)."
-    )
-    parser.add_argument(
-        "--width", type=int, default=1920, help="Video width in pixels (default: 1920)."
-    )
-    parser.add_argument(
-        "--height", type=int, default=1080, help="Video height in pixels (default: 1080)."
-    )
-    parser.add_argument(
-        "--name", default="orbit", help="Project name embedded in the .esp file (default: orbit)."
-    )
-    parser.add_argument(
-        "-o",
-        "--output",
-        help="Output .esp file path (default: out/<name>.esp).",
-    )
-    return parser
-
-
-def main(argv=None):
-    from rich.console import Console
-    from rich.table import Table
-
+def command(
+    lat: Annotated[float, typer.Option(help="Target latitude, in degrees.")],
+    lon: Annotated[float, typer.Option(help="Target longitude, in degrees.")],
+    ground_alt: Annotated[
+        float, typer.Option(help="Target's ground elevation, in meters above sea level.")
+    ] = 0.0,
+    radius: Annotated[
+        float, typer.Option(help="Orbit radius around the target, in meters.")
+    ] = 200.0,
+    camera_height: Annotated[
+        float, typer.Option(help="Camera height above the target's ground elevation, in meters.")
+    ] = 30.0,
+    waypoints: Annotated[
+        int, typer.Option(help="Number of camera waypoints spaced evenly around the orbit.")
+    ] = 3,
+    start_bearing: Annotated[
+        float, typer.Option(help="Compass bearing of the first waypoint, in degrees.")
+    ] = 0.0,
+    seconds_per_leg: Annotated[
+        float, typer.Option(help="Flight time between consecutive waypoints, in seconds.")
+    ] = 5.0,
+    open_loop: Annotated[
+        bool, typer.Option(help="Don't fly back to the first waypoint at the end.")
+    ] = False,
+    frame_rate: Annotated[int, typer.Option(help="Project frame rate.")] = 30,
+    width: Annotated[int, typer.Option(help="Video width in pixels.")] = 1920,
+    height: Annotated[int, typer.Option(help="Video height in pixels.")] = 1080,
+    name: Annotated[str, typer.Option(help="Project name embedded in the .esp file.")] = "orbit",
+    output: Annotated[
+        Path | None,
+        typer.Option("-o", "--output", help="Output .esp file path (default: out/<name>.esp)."),
+    ] = None,
+) -> None:
+    """Generate a Google Earth Studio .esp project that orbits a point of interest."""
     console = Console()
-    args = _build_cli_parser().parse_args(argv)
 
-    if args.waypoints < 2:
+    if waypoints < 2:
         console.print("[bold red]Error:[/] --waypoints must be at least 2.")
-        return 1
+        raise typer.Exit(1)
 
-    output_path = args.output or f"out/{args.name}.esp"
+    output_path = output or Path(f"out/{name}.esp")
 
-    target = {"lat": args.lat, "lon": args.lon, "alt_m": args.ground_alt}
+    target = {"lat": lat, "lon": lon, "alt_m": ground_alt}
 
-    waypoints = []
-    for i in range(args.waypoints):
-        bearing_deg = args.start_bearing + i * 360.0 / args.waypoints
-        lat, lon = destination_point(target["lat"], target["lon"], bearing_deg, args.radius)
-        waypoints.append({"lat": lat, "lon": lon, "alt_m": target["alt_m"] + args.camera_height})
+    orbit = []
+    for i in range(waypoints):
+        bearing_deg = start_bearing + i * 360.0 / waypoints
+        wp_lat, wp_lon = destination_point(target["lat"], target["lon"], bearing_deg, radius)
+        orbit.append({"lat": wp_lat, "lon": wp_lon, "alt_m": target["alt_m"] + camera_height})
 
-    console.rule("[bold cyan]esp-builder[/]")
+    console.rule("[bold cyan]earth build[/]")
     console.print(
         f"Orbiting [bold]({target['lat']:.5f}, {target['lon']:.5f})[/] "
-        f"at radius [bold]{args.radius:.0f}m[/], camera height [bold]{args.camera_height:.0f}m[/]."
+        f"at radius [bold]{radius:.0f}m[/], camera height [bold]{camera_height:.0f}m[/]."
     )
 
     table = Table(title="Waypoints", show_lines=False)
@@ -369,8 +333,8 @@ def main(argv=None):
     table.add_column("Latitude", justify="right")
     table.add_column("Longitude", justify="right")
     table.add_column("Altitude (m)", justify="right")
-    for i, w in enumerate(waypoints):
-        bearing_deg = args.start_bearing + i * 360.0 / args.waypoints
+    for i, w in enumerate(orbit):
+        bearing_deg = start_bearing + i * 360.0 / waypoints
         table.add_row(
             str(i + 1),
             f"{bearing_deg:.1f}°",
@@ -382,23 +346,18 @@ def main(argv=None):
 
     esp = build_orbit_esp(
         target=target,
-        waypoints=waypoints,
-        name=args.name,
-        frame_rate=args.frame_rate,
-        width=args.width,
-        height=args.height,
-        seconds_per_leg=args.seconds_per_leg,
-        close_loop=not args.open_loop,
+        waypoints=orbit,
+        name=name,
+        frame_rate=frame_rate,
+        width=width,
+        height=height,
+        seconds_per_leg=seconds_per_leg,
+        close_loop=not open_loop,
     )
     write_esp(esp, output_path)
 
-    duration_s = esp["settings"]["duration"] / args.frame_rate
+    duration_s = esp["settings"]["duration"] / frame_rate
     console.print(
         f"\n[bold green]✓[/] Wrote [bold]{output_path}[/] "
-        f"({duration_s:.1f}s @ {args.frame_rate}fps, {args.width}x{args.height})"
+        f"({duration_s:.1f}s @ {frame_rate}fps, {width}x{height})"
     )
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

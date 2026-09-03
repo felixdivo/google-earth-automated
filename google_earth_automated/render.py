@@ -7,10 +7,10 @@ Sequence of JPEGs -- there is no PNG or Cloud-free option), grants it
 render, and waits for frames to show up in that directory. Encoding the
 sequence into a video is a separate, later step -- not done here.
 
-Requires a logged-in session -- run studio-login first.
+Requires a logged-in session -- run `earth login` first.
 
-    uv run studio-render frankfurt_hauptbahnhof_orbit.esp
-    uv run studio-render frankfurt_hauptbahnhof_orbit.esp --output-dir out/ --headless
+    uv run earth render frankfurt_hauptbahnhof_orbit.esp
+    uv run earth render frankfurt_hauptbahnhof_orbit.esp --output-dir out/ --headless
 
 Local Image Sequence rendering grants filesystem access via the browser's
 File System Access API (window.showDirectoryPicker()), which Chromium serves
@@ -33,17 +33,18 @@ best-effort and may need adjusting after the first live run -- this is the one
 place to fix them.
 """
 
-import argparse
 import json
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Annotated
 
+import typer
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page, sync_playwright
 
-from .earth_studio_browser import (
+from .browser import (
     EARTH_STUDIO_URL,
     first_page,
     gpu_status,
@@ -275,33 +276,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "out"
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Render an Earth Studio .esp project to a JPEG image sequence."
-    )
-    parser.add_argument("esp_file", type=Path, help="Path to the .esp project file to render")
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=DEFAULT_OUTPUT_DIR,
-        help=(
-            "Directory to render the JPEG sequence into (default: out/ at the repo root). "
-            "Earth Studio nests frames under a project-name subfolder of this directory on its own."
-        ),
-    )
-    parser.add_argument(
-        "--headless",
-        action="store_true",
-        help="Run the browser headless (default: headed, recommended until selectors are verified)",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Validate arguments and the .esp file, print the planned actions, and exit without launching a browser",
-    )
-    return parser.parse_args(argv)
-
-
 def validate_esp_file(esp_file: Path) -> dict:
     if not esp_file.is_file():
         sys.exit(f"error: {esp_file} does not exist")
@@ -321,7 +295,7 @@ def render(
 
         if "studio" not in page.url:
             context.close()
-            sys.exit("error: not logged in -- run `uv run studio-login` first")
+            sys.exit("error: not logged in -- run `uv run earth login` first")
 
         print(gpu_status(page), flush=True)
 
@@ -345,9 +319,29 @@ def render(
         print(f"Rendered frames written to {output_dir}/", flush=True)
 
 
-def main(argv: list[str] | None = None) -> None:
-    args = parse_args(argv)
-    esp_data = validate_esp_file(args.esp_file)
+def command(
+    esp_file: Annotated[Path, typer.Argument(help="The .esp project file to render.")],
+    output_dir: Annotated[
+        Path,
+        typer.Option(
+            help=(
+                "Directory to render the JPEG sequence into (default: out/ at the repo "
+                "root). Earth Studio nests frames under a project-name subfolder of this "
+                "directory on its own."
+            ),
+        ),
+    ] = DEFAULT_OUTPUT_DIR,
+    headless: Annotated[
+        bool,
+        typer.Option(help="Run the browser headless (default: headed, until selectors are verified)."),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(help="Validate the .esp file and print the planned actions without a browser."),
+    ] = False,
+) -> None:
+    """Render an Earth Studio .esp project to a JPEG image sequence."""
+    esp_data = validate_esp_file(esp_file)
     duration = esp_data.get("settings", {}).get("duration")
     # Earth Studio renders the range inclusive of both ends: for
     # settings.duration 450 its own render dialog reads "Frames 0 - 450" and
@@ -357,19 +351,15 @@ def main(argv: list[str] | None = None) -> None:
     # browser mid-write, losing the final frame.
     expected_frame_count = duration + 1 if duration is not None else None
 
-    if args.dry_run:
-        print(f"Would import {args.esp_file} into Earth Studio")
+    if dry_run:
+        print(f"Would import {esp_file} into Earth Studio")
         print("Would set render format to Image sequence (.jpeg)")
-        print(f"Would render frames directly into {args.output_dir}/")
+        print(f"Would render frames directly into {output_dir}/")
         return
 
     render(
-        args.esp_file,
-        args.output_dir,
-        headless=args.headless,
+        esp_file,
+        output_dir,
+        headless=headless,
         expected_frame_count=expected_frame_count,
     )
-
-
-if __name__ == "__main__":
-    main()
