@@ -74,9 +74,13 @@ time, fast — rather than a full flyover:
 
 ```
 uv run earth serve
-curl -o frame.jpg \
+curl -o /tmp/f.jpg \
     'http://localhost:8000/frame?lat=50.1070&lon=8.6633&alt=145&heading=180&tilt=70'
 ```
+
+That second line doubles as a smoke test: point it at a server you are
+debugging and it either leaves a viewable JPEG at `/tmp/f.jpg` or prints the
+error the API returned.
 
 `earth serve` starts a small HTTP API and keeps one logged-in Earth Studio
 page open for as long as it runs, instead of launching a fresh browser per
