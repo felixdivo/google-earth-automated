@@ -106,13 +106,80 @@ def _keyframed_block(attr_type, times, values, value_range=None, logarithmic=Non
     }
 
 
-def _static_poi_block(attr_type, value, value_range=None, logarithmic=None):
+def _static_block(attr_type, value, value_range=None, logarithmic=None):
+    """A camera attribute that holds one value for the whole scene (no keyframes)."""
     block_value = {"relative": value if not value_range else _relative(value, value_range)}
     if value_range is not None:
         block_value["minValueRange"], block_value["maxValueRange"] = value_range
     if logarithmic is not None:
         block_value["logarithmic"] = logarithmic
     return {"type": attr_type, "value": block_value}
+
+
+def _camera_lens_group():
+    return {
+        "type": "cameraLensGroup",
+        "attributes": [
+            {"type": "fov", "value": {}},
+            {"type": "exposure", "value": {}},
+            {"type": "aperture", "value": {}},
+            {"type": "minFocusLength", "value": {}},
+        ],
+    }
+
+
+def _environment_group():
+    return {
+        "type": "environmentGroup",
+        "attributes": [
+            {
+                "type": "sunGroup",
+                "attributes": [
+                    {"type": "sunVisibility", "value": {}},
+                    {"type": "worldTime", "value": {"relative": 0.5}},
+                ],
+            },
+            {
+                "type": "cloudGroup",
+                "attributes": [
+                    {"type": "cloudVisibility", "value": {}},
+                    {"type": "cloudopacity", "value": {}},
+                    {"type": "cloudheight", "value": {}},
+                    {"type": "clouddate", "value": {"relative": 0.9545454545454546}},
+                ],
+            },
+            {"type": "starsPlanetsGroup", "attributes": [{"type": "starsEnabled", "value": {}}]},
+            {
+                "type": "seawaterGroup",
+                "attributes": [
+                    {"type": "seawater", "value": {}},
+                    {"type": "influence", "value": {"relative": 1}},
+                ],
+            },
+            {"type": "buildingsEnabled", "value": {}},
+        ],
+    }
+
+
+def _esp(scene, *, name, frame_rate, width, height, duration_frames):
+    return {
+        "modelVersion": 17,
+        "settings": {
+            "name": name,
+            "frameRate": frame_rate,
+            "dimensions": {"width": width, "height": height},
+            "duration": duration_frames,
+            "timeFormat": "frames",
+        },
+        "scenes": [scene],
+        "playbackManager": {"range": {"start": 0, "end": duration_frames}},
+    }
+
+
+def _pan_range(heading):
+    """Earth Studio stores rotationX relative to a min/max range, which cannot be
+    degenerate -- a constant heading gets a half-degree window centred on it."""
+    return (heading - 0.5, heading + 0.5)
 
 
 def build_orbit_esp(
@@ -149,7 +216,7 @@ def build_orbit_esp(
     pan_range = (
         (min(headings), max(headings))
         if min(headings) != max(headings)
-        else (headings[0] - 0.5, headings[0] + 0.5)
+        else _pan_range(headings[0])
     )
 
     duration_frames = round((n - 1) * seconds_per_leg * frame_rate)
@@ -171,9 +238,9 @@ def build_orbit_esp(
             {
                 "type": "poi",
                 "attributes": [
-                    _static_poi_block("longitudePOI", target["lon"], LON_RANGE),
-                    _static_poi_block("latitudePOI", target["lat"], LAT_RANGE),
-                    _static_poi_block("altitudePOI", target["alt_m"], ALT_RANGE, logarithmic=False),
+                    _static_block("longitudePOI", target["lon"], LON_RANGE),
+                    _static_block("latitudePOI", target["lat"], LAT_RANGE),
+                    _static_block("altitudePOI", target["alt_m"], ALT_RANGE, logarithmic=False),
                 ],
             },
             {"type": "influence", "value": {"relative": 1}},
@@ -190,47 +257,6 @@ def build_orbit_esp(
         ],
     }
 
-    camera_lens_group = {
-        "type": "cameraLensGroup",
-        "attributes": [
-            {"type": "fov", "value": {}},
-            {"type": "exposure", "value": {}},
-            {"type": "aperture", "value": {}},
-            {"type": "minFocusLength", "value": {}},
-        ],
-    }
-
-    environment_group = {
-        "type": "environmentGroup",
-        "attributes": [
-            {
-                "type": "sunGroup",
-                "attributes": [
-                    {"type": "sunVisibility", "value": {}},
-                    {"type": "worldTime", "value": {"relative": 0.5}},
-                ],
-            },
-            {
-                "type": "cloudGroup",
-                "attributes": [
-                    {"type": "cloudVisibility", "value": {}},
-                    {"type": "cloudopacity", "value": {}},
-                    {"type": "cloudheight", "value": {}},
-                    {"type": "clouddate", "value": {"relative": 0.9545454545454546}},
-                ],
-            },
-            {"type": "starsPlanetsGroup", "attributes": [{"type": "starsEnabled", "value": {}}]},
-            {
-                "type": "seawaterGroup",
-                "attributes": [
-                    {"type": "seawater", "value": {}},
-                    {"type": "influence", "value": {"relative": 1}},
-                ],
-            },
-            {"type": "buildingsEnabled", "value": {}},
-        ],
-    }
-
     scene = {
         "animationModel": {"roving": False, "logarithmic": False, "groupedPosition": True},
         "duration": duration_frames,
@@ -242,26 +268,73 @@ def build_orbit_esp(
                     camera_position_group,
                     camera_target_effect,
                     camera_rotation_group,
-                    camera_lens_group,
+                    _camera_lens_group(),
                 ],
             },
-            environment_group,
+            _environment_group(),
         ],
         "cameraExport": {"logarithmic": False, "modelVersion": 2},
     }
 
-    return {
-        "modelVersion": 17,
-        "settings": {
-            "name": name,
-            "frameRate": frame_rate,
-            "dimensions": {"width": width, "height": height},
-            "duration": duration_frames,
-            "timeFormat": "frames",
-        },
-        "scenes": [scene],
-        "playbackManager": {"range": {"start": 0, "end": duration_frames}},
+    return _esp(
+        scene,
+        name=name,
+        frame_rate=frame_rate,
+        width=width,
+        height=height,
+        duration_frames=duration_frames,
+    )
+
+
+def build_still_esp(
+    lat, lon, alt_m, *, heading=0.0, tilt=45.0, name="frame", frame_rate=30, width=1920, height=1080
+):
+    """Build an .esp project dict for a single static frame: one camera pose, no keyframes,
+    no target POI (heading/tilt are given directly instead of derived from facing a target).
+
+    lat/lon/alt_m: camera position. heading: compass bearing in degrees the camera faces.
+    tilt: degrees from straight down (0 = straight down, 90 = horizon).
+    """
+    pan_range = _pan_range(heading)
+
+    camera_position_group = {
+        "type": "cameraPositionGroup",
+        "attributes": [
+            _static_block("longitude", lon, LON_RANGE),
+            _static_block("latitude", lat, LAT_RANGE),
+            _static_block("altitude", alt_m, ALT_RANGE, logarithmic=False),
+        ],
     }
+
+    camera_rotation_group = {
+        "type": "cameraRotationGroup",
+        "attributes": [
+            _static_block("rotationX", heading, pan_range),
+            _static_block("rotationY", tilt, TILT_RANGE),
+            {"type": "rotationZ", "value": {"relative": 0}},
+        ],
+    }
+
+    scene = {
+        "animationModel": {"roving": False, "logarithmic": False, "groupedPosition": True},
+        "duration": 0,
+        "attributes": [
+            {
+                "type": "cameraGroup",
+                "attributes": [
+                    camera_position_group,
+                    camera_rotation_group,
+                    _camera_lens_group(),
+                ],
+            },
+            _environment_group(),
+        ],
+        "cameraExport": {"logarithmic": False, "modelVersion": 2},
+    }
+
+    return _esp(
+        scene, name=name, frame_rate=frame_rate, width=width, height=height, duration_frames=0
+    )
 
 
 def write_esp(esp_dict, path):
