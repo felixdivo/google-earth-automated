@@ -17,7 +17,7 @@ make sure your use complies with
 [Google's Terms of Service](https://policies.google.com/terms).**
 
 Everything runs through one `earth` command; `uv run earth --help` lists the
-subcommands.
+subcommands (`build`, `login`, `render`, `gpu-check`, `serve`).
 
 ## Generating a project: `earth build`
 
@@ -67,10 +67,36 @@ here. Add `--dry-run` to validate the `.esp` file and see the planned steps
 without opening a browser. The render runs headed (on the virtual display) —
 the native folder picker it needs never appears in headless Chromium.
 
+## Serving single frames: `earth serve`
+
+For "what does it look like from here, facing that way" — one frame at a
+time, fast — rather than a full flyover:
+
+```
+uv run earth serve
+curl -o frame.jpg \
+    'http://localhost:8000/frame?lat=50.1070&lon=8.6633&alt=145&heading=180&tilt=70'
+```
+
+`earth serve` starts a small HTTP API and keeps one logged-in Earth Studio
+page open for as long as it runs, instead of launching a fresh browser per
+request the way `earth render` does. `GET /frame` takes `lat`/`lon`/`alt`
+(camera position; `alt` in meters above sea level), `heading` (compass
+bearing, default `0`) and `tilt` (degrees from straight down, default `45`),
+optionally `width`/`height`, and responds with the rendered frame as
+`image/jpeg` — a few seconds per request once the server has warmed up,
+against the tens of seconds a one-off `earth render` needs to launch a
+browser and log in. `GET /health` reports readiness. The server keeps no
+frames on disk between requests — nothing is written to `out/` or anywhere
+else in the repo — and it binds `0.0.0.0` by default, so treat it as
+trusted-network-only: it's an unauthenticated endpoint driving a logged-in
+Google session. See `uv run earth serve --help` for the full option list.
+
 ### Running with Docker
 
 `./run.sh` builds the image (`Dockerfile`) and runs a command in it with the
-repo bind-mounted, noVNC on port 6080, and — on a Linux host with the
+repo bind-mounted, noVNC on port 6080, the `earth serve` API on port 8000,
+and — on a Linux host with the
 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/)
 — the GPU passed through via CDI for hardware-accelerated rendering:
 
@@ -79,6 +105,7 @@ repo bind-mounted, noVNC on port 6080, and — on a Linux host with the
 ./run.sh uv run earth login                        # one-time Google login (via noVNC)
 ./run.sh uv run earth build --lat ... --lon ...     # generate a project
 ./run.sh uv run earth render <project>.esp
+./run.sh uv run earth serve                         # single-frame render API on :8000
 ```
 
 The `GPUS` variable picks which GPUs to expose — a comma-separated list of CDI
@@ -187,6 +214,10 @@ automation work. Worth knowing before you run it:
 - **`.auth/chrome-profile/` holds a live Google session** (gitignored, never
   committed) — anyone with filesystem access to it can reuse your login
   without re-authenticating.
+- **`earth serve` is unauthenticated** — anyone who can reach its port can
+  drive the logged-in Earth Studio session to render frames. It binds
+  `0.0.0.0` by default; only expose it on a trusted network, or put it behind
+  your own auth/reverse proxy.
 
 ## License
 

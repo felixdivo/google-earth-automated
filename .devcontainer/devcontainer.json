@@ -46,10 +46,14 @@
   "postCreateCommand": "if [ ! -e /root/.claude/projects ] && [ -d /root/.cache/uv/claude-backup ]; then cp -a /root/.cache/uv/claude-backup/. /root/.claude/; fi",
   // Same services script the ./run.sh entrypoint runs.
   "postStartCommand": "sh docker/services.sh",
-  "forwardPorts": [6080],
+  "forwardPorts": [6080, 8000],
   "portsAttributes": {
     "6080": {
       "label": "noVNC (headed browser)",
+      "onAutoForward": "silent"
+    },
+    "8000": {
+      "label": "earth serve (frame render API)",
       "onAutoForward": "silent"
     }
   },
