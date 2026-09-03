@@ -37,12 +37,13 @@ import json
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
 import typer
 from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import Page, Playwright, sync_playwright
 
 from .browser import (
     EARTH_STUDIO_URL,
@@ -59,7 +60,14 @@ IMPORT_MENU_ITEM = "div[data-action='click:importProject']"
 RENDER_BUTTON = "text=Render"
 FORMAT_IMAGE_SEQUENCE_OPTION = "text=Image sequence (.jpeg)"
 CHOOSE_FOLDER_BUTTON = "#output-dir-btn"  # reads "Choose folder" only the first time; a remembered destination replaces the label with its name
+CHOOSE_FOLDER_LABEL = "Choose folder"
 START_RENDER_BUTTON = "button[data-action='click:onStartClick']"
+# Closes the render panel/progress view once a render finishes, so a later
+# render on the same warm page starts from a clean editor. Unverified guess
+# (Session.render_esp is the first thing in this repo to render twice on one
+# page) -- _close_render_panel() below falls back to Escape and never raises,
+# so a wrong selector here degrades instead of breaking a render.
+CLOSE_RENDER_PANEL_BUTTON = "button[data-action='click:onCloseClick']"
 # -----------------------------------------------------------------------------
 
 # Title of the Chrome-for-Testing window, for aiming keyboard input at the
@@ -221,6 +229,29 @@ def start_render(page: Page, *, attempts: int = 8) -> None:
     )
 
 
+def _close_render_panel(page: Page) -> None:
+    """Dismiss the render panel/progress view after a render finishes, so a later
+    render on the same warm page starts from a clean editor. Best-effort and never
+    raises: CLOSE_RENDER_PANEL_BUTTON is an unverified selector guess, so this
+    falls back to Escape. Worst case the panel is still open and the next
+    render's clicks land on it instead -- fix the same way as any other selector
+    here, by watching a live run.
+    """
+    try:
+        page.click(CLOSE_RENDER_PANEL_BUTTON, timeout=3000)
+        return
+    except PlaywrightError:
+        pass
+    try:
+        page.keyboard.press("Escape")
+    except PlaywrightError:
+        pass
+
+
+def _print_progress(message: str) -> None:
+    print(message, flush=True)
+
+
 def wait_for_frames(
     output_dir: Path,
     *,
@@ -229,6 +260,7 @@ def wait_for_frames(
     quiet_period_s: float = 60.0,
     poll_interval_s: float = 2.0,
     progress_interval_s: float = 30.0,
+    progress: Callable[[str], None] = _print_progress,
 ) -> None:
     """Local Image Sequence rendering writes frames directly into output_dir
     (in a project-named subfolder) via the File System Access API -- there's
@@ -239,6 +271,10 @@ def wait_for_frames(
     because SwiftShader software rendering (this devcontainer has no real
     GPU) can take well over a minute per frame -- a short quiet period would
     mistake "still rendering the next frame" for "done".
+
+    progress() is called with human-readable status lines instead of printing
+    directly, so a caller that wants to stay quiet (e.g. one HTTP request among
+    many on a long-running server) can pass a no-op.
     """
     started = time.monotonic()
     deadline = started + timeout_ms / 1000
@@ -249,7 +285,7 @@ def wait_for_frames(
     while time.monotonic() < deadline:
         count = _frames_on_disk(output_dir)
         if expected_frame_count is not None and count >= expected_frame_count:
-            print(f"Rendered {count}/{total} frames", flush=True)
+            progress(f"Rendered {count}/{total} frames")
             return
         if count != last_count:
             last_count = count
@@ -265,7 +301,7 @@ def wait_for_frames(
         now = time.monotonic()
         if now - last_report >= progress_interval_s:
             last_report = now
-            print(f"Rendered {count}/{total} frames ({now - started:.0f}s elapsed)", flush=True)
+            progress(f"Rendered {count}/{total} frames ({now - started:.0f}s elapsed)")
         time.sleep(poll_interval_s)
     raise TimeoutError(
         f"no stable output detected in {output_dir} within the timeout (last count: {last_count})"
@@ -276,28 +312,69 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "out"
 
 
+class NotLoggedInError(RuntimeError):
+    """Raised when Earth Studio doesn't redirect to /studio -- no active session."""
+
+
 def validate_esp_file(esp_file: Path) -> dict:
     if not esp_file.is_file():
-        sys.exit(f"error: {esp_file} does not exist")
+        raise FileNotFoundError(f"{esp_file} does not exist")
     try:
         return json.loads(esp_file.read_text())
     except json.JSONDecodeError as e:
-        sys.exit(f"error: {esp_file} is not valid JSON: {e}")
+        raise ValueError(f"{esp_file} is not valid JSON: {e}") from e
 
 
-def render(
-    esp_file: Path, output_dir: Path, *, headless: bool, expected_frame_count: int | None
-) -> None:
-    with sync_playwright() as playwright:
-        context = launch_context(playwright, headless=headless)
-        page = first_page(context)
-        page.goto(EARTH_STUDIO_URL)
+class Session:
+    """A warm, logged-in Earth Studio page. Reused across render_esp() calls so
+    the browser launch, SPA load, and File System Access folder grant are each
+    paid once instead of on every render -- what makes `earth serve` fast.
+    """
 
-        if "studio" not in page.url:
-            context.close()
-            sys.exit("error: not logged in -- run `uv run earth login` first")
+    def __init__(self, playwright: Playwright, *, headless: bool = False):
+        self.context = launch_context(playwright, headless=headless)
+        self.page = first_page(self.context)
+        # Earth Studio can raise native window.confirm()/alert() dialogs (e.g.
+        # "discard unsaved changes?" when importing over a loaded project) --
+        # these are browser chrome, not page DOM, so this is the only way
+        # Playwright can answer them. Registered once up front to cover every
+        # render this session makes.
+        self.page.on("dialog", lambda dialog: dialog.accept())
+        self.page.goto(EARTH_STUDIO_URL)
 
-        print(gpu_status(page), flush=True)
+        if "studio" not in self.page.url:
+            self.context.close()
+            raise NotLoggedInError("not logged in -- run `uv run earth login` first")
+
+        print(gpu_status(self.page), flush=True)
+        self._granted_output_dir: Path | None = None
+
+    def _folder_grant_needed(self, output_dir: Path) -> bool:
+        if self._granted_output_dir != output_dir:
+            return True
+        try:
+            label = self.page.locator(CHOOSE_FOLDER_BUTTON).inner_text(timeout=2000)
+        except PlaywrightError:
+            return True  # can't tell -- re-grant to be safe
+        return label.strip() == CHOOSE_FOLDER_LABEL
+
+    def render_esp(
+        self,
+        esp_file: Path,
+        output_dir: Path,
+        *,
+        expected_frame_count: int | None,
+        timeout_ms: int = RENDER_TIMEOUT_MS,
+        progress: Callable[[str], None] = _print_progress,
+    ) -> None:
+        """Import esp_file and render it as a JPEG Image Sequence into output_dir.
+
+        Safe to call more than once on the same Session -- each call imports
+        over whatever project the page currently has loaded and only redoes
+        the File System Access folder grant when output_dir has changed since
+        the last call (see _folder_grant_needed()).
+        """
+        page = self.page
 
         page.click(IMPORT_TOGGLE)
         with page.expect_file_chooser() as file_chooser_info:
@@ -309,14 +386,37 @@ def render(
         page.wait_for_timeout(1000)
         page.click(FORMAT_IMAGE_SEQUENCE_OPTION)
 
-        select_output_folder(page, output_dir)
+        if self._folder_grant_needed(output_dir):
+            select_output_folder(page, output_dir)
+            self._granted_output_dir = output_dir
         start_render(page)
         wait_for_frames(
-            output_dir, expected_frame_count=expected_frame_count, timeout_ms=RENDER_TIMEOUT_MS
+            output_dir,
+            expected_frame_count=expected_frame_count,
+            timeout_ms=timeout_ms,
+            progress=progress,
         )
+        _close_render_panel(page)
 
-        context.close()
-        print(f"Rendered frames written to {output_dir}/", flush=True)
+    def close(self) -> None:
+        self.context.close()
+
+
+def render(
+    esp_file: Path, output_dir: Path, *, headless: bool, expected_frame_count: int | None
+) -> None:
+    with sync_playwright() as playwright:
+        session = Session(playwright, headless=headless)
+        try:
+            session.render_esp(
+                esp_file,
+                output_dir,
+                expected_frame_count=expected_frame_count,
+                timeout_ms=RENDER_TIMEOUT_MS,
+            )
+        finally:
+            session.close()
+    print(f"Rendered frames written to {output_dir}/", flush=True)
 
 
 def command(
@@ -333,15 +433,23 @@ def command(
     ] = DEFAULT_OUTPUT_DIR,
     headless: Annotated[
         bool,
-        typer.Option(help="Run the browser headless (default: headed, until selectors are verified)."),
+        typer.Option(
+            help="Run the browser headless (default: headed, until selectors are verified)."
+        ),
     ] = False,
     dry_run: Annotated[
         bool,
-        typer.Option(help="Validate the .esp file and print the planned actions without a browser."),
+        typer.Option(
+            help="Validate the .esp file and print the planned actions without a browser."
+        ),
     ] = False,
 ) -> None:
     """Render an Earth Studio .esp project to a JPEG image sequence."""
-    esp_data = validate_esp_file(esp_file)
+    try:
+        esp_data = validate_esp_file(esp_file)
+    except (FileNotFoundError, ValueError) as e:
+        sys.exit(f"error: {e}")
+
     duration = esp_data.get("settings", {}).get("duration")
     # Earth Studio renders the range inclusive of both ends: for
     # settings.duration 450 its own render dialog reads "Frames 0 - 450" and
@@ -357,9 +465,12 @@ def command(
         print(f"Would render frames directly into {output_dir}/")
         return
 
-    render(
-        esp_file,
-        output_dir,
-        headless=headless,
-        expected_frame_count=expected_frame_count,
-    )
+    try:
+        render(
+            esp_file,
+            output_dir,
+            headless=headless,
+            expected_frame_count=expected_frame_count,
+        )
+    except NotLoggedInError as e:
+        sys.exit(f"error: {e}")
