@@ -19,20 +19,12 @@ app.command("serve")(serve.command)
 
 
 def main() -> None:
-    """Console-script entry point: the Typer app, plus graceful interrupts.
+    """Console-script entry point.
 
-    The interrupt itself is announced and bounded by the signal handler; each
-    command closes its browser from its own `finally` as the KeyboardInterrupt
-    propagates. Typer catches that at the top and exits 130 on its own, so all
-    that is left here is the same treatment for one raised anywhere it does
-    not reach -- and the right code for a SIGTERM, which is 143, not 130.
+    Typer already turns a KeyboardInterrupt into exit 130, and each command
+    closes its browser from its own `finally` as one propagates -- so all this
+    adds is the handler that makes an interrupt quiet and bounded (see
+    shutdown.py).
     """
     shutdown.install_signal_handlers()
-    try:
-        app()
-    except KeyboardInterrupt:
-        raise SystemExit(shutdown.exit_code) from None
-    except SystemExit as e:
-        if e.code == 130 and shutdown.exit_code != 130:
-            raise SystemExit(shutdown.exit_code) from None
-        raise
+    app()

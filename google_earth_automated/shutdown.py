@@ -1,30 +1,30 @@
 """Make an interrupt a clean exit rather than a traceback plus driver noise.
 
 Every command here drives Chromium through Playwright's sync API, which runs
-its asyncio event loop on a second thread. A signal lands in the main thread
+its event loop on a second thread. An interrupt lands in the main thread
 mid-call, so the loop is left holding a task that will never be awaited
-(`Page.goto()`, most often) -- and tearing it down then logs, on top of
-whatever traceback Python prints:
+(`Page.goto()`, most often), and tearing it down then logs, on top of whatever
+traceback Python prints:
 
     Task was destroyed but it is pending!
     Future exception was never retrieved
     playwright._impl._errors.TargetClosedError: Target page, context or browser has been closed
 
-None of that is actionable: it is the browser being closed while a call was in
-flight, which is exactly what Ctrl-C asked for. install_signal_handlers()
-silences it at the source -- the moment the first signal arrives, before any
-teardown runs -- and then raises KeyboardInterrupt so the interrupt propagates
-normally, letting each command's own `finally` blocks close the browser.
+None of that is actionable -- it is the browser being closed while a call was
+in flight, which is exactly what Ctrl-C asked for. The handler below silences
+it at the source, then raises KeyboardInterrupt so the interrupt propagates
+normally and each command's own `finally` gets to close its browser. SIGTERM
+is handled the same way, so `docker stop` on a long-running `earth serve` shuts
+down as gracefully as Ctrl-C does.
 
-SIGTERM is handled the same way, so `docker stop` on a long-running
-`earth serve` shuts the session down as gracefully as Ctrl-C does.
-
-Cleanup is given GRACE_PERIOD_S to finish and no longer. It can hang outright:
+Cleanup gets GRACE_PERIOD_S and no longer, because it can hang outright:
 interrupting a browser *launch* leaves Playwright's teardown waiting forever on
-a call that will never come back, which without the watchdog below needs a
-SIGKILL from another terminal. A second signal -- one arriving while cleanup is
-still running -- ends it immediately too, so the user never has to wait out the
-grace period.
+a call that will never come back. A second signal ends it immediately too, so
+nobody has to sit through the grace period. Either way the exit takes the
+browser with it: Playwright's driver cleans up after a client that disappears
+while it is *idle*, but one interrupted mid-operation leaves the node driver
+and the whole Chromium tree running indefinitely (measured -- they were still
+alive minutes later), and on a render host that is a leaked GPU.
 """
 
 import logging
@@ -32,89 +32,72 @@ import os
 import signal
 import sys
 import threading
+from collections.abc import Iterator
+from contextlib import suppress
 from types import FrameType
 
-_HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM)
-
-# How long the commands' own cleanup (closing the browser, clearing scratch
-# files) gets before it is taken as hung. Generous enough for a real
-# context.close() on a busy browser, short enough not to feel like a freeze.
+# Long enough for a real context.close() on a busy browser, short enough that a
+# stuck shutdown does not feel like a freeze.
 GRACE_PERIOD_S = 6.0
 
-# By convention a process killed by signal N reports 128 + N. SIGINT until a
-# signal actually arrives, so an interrupt raised from anywhere else (a
-# KeyboardInterrupt out of input(), say) still exits as one.
-exit_code = 128 + int(signal.SIGINT)
-
+_exit_code = 130  # 128 + SIGINT, replaced by whichever signal actually arrives
 _interrupted = False
 
 
-def _kill_browser_processes() -> None:
-    """SIGKILL every descendant -- the Playwright driver and the Chromium tree
-    it launched. Only used when shutting down gracefully has already failed:
-    hard-exiting without this can orphan a whole browser (and, on a render
-    host, its share of the GPU).
-    """
-    children: dict[int, list[int]] = {}
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        try:
-            # /proc/<pid>/stat is "<pid> (<comm>) <state> <ppid> ..."; comm can
-            # itself contain spaces and parentheses, so split after the last ')'.
-            with open(f"/proc/{entry}/stat") as f:
-                fields = f.read().rpartition(")")[2].split()
-            ppid = int(fields[1])
-        except (OSError, ValueError, IndexError):
-            continue
-        children.setdefault(ppid, []).append(int(entry))
-
-    queue = [os.getpid()]
-    doomed = []
-    while queue:  # breadth-first, so parents cannot fork out of reach
-        for pid in children.get(queue.pop(), ()):
-            doomed.append(pid)
-            queue.append(pid)
-    for pid in doomed:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
+def _descendants(pid: int) -> Iterator[int]:
+    """Every process below pid, children before parents."""
+    try:
+        with open(f"/proc/{pid}/task/{pid}/children") as f:
+            children = f.read().split()
+    except OSError:
+        return  # already gone, or not Linux -- nothing to kill either way
+    for child in map(int, children):
+        yield from _descendants(child)
+        yield child
 
 
 def _force_exit(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
     sys.stdout.flush()
-    _kill_browser_processes()
-    os._exit(exit_code)
+    # Only our own descendants: the Playwright driver and the Chromium tree it
+    # spawned, never anything else that happens to be running on this host.
+    for pid in _descendants(os.getpid()):
+        with suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
+    os._exit(_exit_code)
 
 
 def _on_signal(signum: int, _frame: FrameType | None) -> None:
-    global _interrupted, exit_code
+    global _exit_code, _interrupted
     if _interrupted:
         _force_exit("Still shutting down -- forcing exit.")
     _interrupted = True
-    exit_code = 128 + signum
-    # Said now rather than after cleanup: shutting a browser down takes a
-    # moment, and silence in that moment is what makes people hit Ctrl-C again.
+    _exit_code = 128 + signum
+
+    # Said now rather than after cleanup: closing a browser takes a moment, and
+    # silence in that moment is what makes people hit Ctrl-C again.
     name = "Interrupted" if signum == signal.SIGINT else "Terminated"
     print(f"\n{name} -- shutting down (again to force).", file=sys.stderr, flush=True)
+
     # Playwright's loop thread is about to be torn down with calls still in
-    # flight; its complaints about that are shutdown artifacts (see module
-    # docstring), and the process is on its way out anyway.
+    # flight; its complaints about that are shutdown noise (see module docstring).
     logging.getLogger("asyncio").setLevel(logging.CRITICAL)
-    # Daemon, so a shutdown that finishes in time is not held up by it.
+
+    # A thread, not signal.alarm(): the hang this guards against blocks the main
+    # thread, which is where signal handlers would have to run. Daemon, so a
+    # shutdown that finishes in time is not held up by it.
     watchdog = threading.Timer(
         GRACE_PERIOD_S,
         _force_exit,
-        args=(f"Shutdown did not finish within {GRACE_PERIOD_S:.0f}s -- forcing exit.",),
+        args=(f"Shutdown stalled for {GRACE_PERIOD_S:.0f}s -- forcing exit.",),
     )
     watchdog.daemon = True
     watchdog.start()
+
     raise KeyboardInterrupt
 
 
 def install_signal_handlers() -> None:
     """Route SIGINT/SIGTERM into the graceful shutdown path, for good."""
-    for sig in _HANDLED_SIGNALS:
+    for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, _on_signal)
