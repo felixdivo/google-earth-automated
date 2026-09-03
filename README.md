@@ -107,11 +107,11 @@ and — on a Linux host with the
 — the GPU passed through via CDI for hardware-accelerated rendering:
 
 ```
-./run.sh uv run earth gpu-check                    # verify the GPU is usable
-./run.sh uv run earth login                        # one-time Google login (via noVNC)
-./run.sh uv run earth build --lat ... --lon ...     # generate a project
+./run.sh uv run earth gpu-check                  # verify the GPU is usable
+./run.sh uv run earth login                      # one-time Google login (via noVNC)
+./run.sh uv run earth build --lat ... --lon ...  # generate a project
 ./run.sh uv run earth render <project>.esp
-./run.sh uv run earth serve --host 0.0.0.0           # single-frame render API on :8000
+./run.sh uv run earth serve --host 0.0.0.0       # single-frame render API on :8000
 ```
 
 `earth serve`'s loopback-only default means *inside* the container -- real
