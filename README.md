@@ -16,21 +16,24 @@ through its web UI — see [Security](#security) below before running it, and
 make sure your use complies with
 [Google's Terms of Service](https://policies.google.com/terms).**
 
-## Generating a project: `esp-builder`
+Everything runs through one `earth` command; `uv run earth --help` lists the
+subcommands (`build`, `login`, `render`, `gpu-check`).
 
-`google_earth_automated/esp_builder.py` is both a conversion library (`build_orbit_esp`,
-`destination_point`, `write_esp`, ...) and the `esp-builder` CLI: give it a
-point of interest and it builds a `.esp` project that orbits it, camera always
+## Generating a project: `earth build`
+
+`google_earth_automated/build.py` is both a conversion library (`build_orbit_esp`,
+`destination_point`, `write_esp`, ...) and the `earth build` subcommand: give it
+a point of interest and it builds a `.esp` project that orbits it, camera always
 facing the target.
 
 ```
-uv run esp-builder --lat 50.1070 --lon 8.6633 --ground-alt 115 \
+uv run earth build --lat 50.1070 --lon 8.6633 --ground-alt 115 \
     --radius 200 --camera-height 30 --name frankfurt_hauptbahnhof_orbit
 ```
 
 The `.esp` is written to `out/<name>.esp` by default (override with `-o`).
 
-Run `uv run esp-builder --help` for all options (waypoint count, start
+Run `uv run earth build --help` for all options (waypoint count, start
 bearing, leg duration, frame rate, resolution, open vs. closed loop, ...).
 
 ## Rendering a project to an image sequence
@@ -41,7 +44,7 @@ stack already in place. To run it directly on your host instead, first
 `uv run playwright install --with-deps chromium`, then:
 
 ```
-uv run studio-login
+uv run earth login
 ```
 
 This opens a real, visible browser window against Earth Studio using a
@@ -52,7 +55,7 @@ session is reused by every later render.
 Then, for each project:
 
 ```
-uv run studio-render out/frankfurt_hauptbahnhof_orbit.esp
+uv run earth render out/frankfurt_hauptbahnhof_orbit.esp
 ```
 
 This imports the project, sets the render format to Image sequence (JPEG —
@@ -72,10 +75,10 @@ repo bind-mounted, noVNC on port 6080, and — on a Linux host with the
 — the GPU passed through via CDI for hardware-accelerated rendering:
 
 ```
-./run.sh uv run studio-gpu-check                    # verify the GPU is usable
-./run.sh uv run studio-login                        # one-time Google login (via noVNC)
-./run.sh uv run esp-builder --lat ... --lon ...     # generate a project
-./run.sh uv run studio-render <project>.esp
+./run.sh uv run earth gpu-check                    # verify the GPU is usable
+./run.sh uv run earth login                        # one-time Google login (via noVNC)
+./run.sh uv run earth build --lat ... --lon ...     # generate a project
+./run.sh uv run earth render <project>.esp
 ```
 
 The `GPUS` variable picks which GPUs to expose — a comma-separated list of CDI
@@ -90,7 +93,7 @@ Two things make this harder than a normal Playwright script:
 
 - **Earth Studio grants the output folder through the browser's File System
   Access API**, which Chromium serves as a *native OS dialog* — outside
-  Playwright's control entirely. `studio_render` drives it with `xdotool`
+  Playwright's control entirely. `render.py` drives it with `xdotool`
   instead (see `select_output_folder()`), which depends on the
   D-Bus/portal/window-manager stack `docker/services.sh` brings up and on the
   `/dev/fuse` + `CAP_SYS_ADMIN` grant described in Security below. Two more
@@ -101,10 +104,10 @@ Two things make this harder than a normal Playwright script:
   policy, so the prompts really do appear; the grant then persists in the
   profile for later runs.
 - **Earth Studio's UI is an undocumented, JS-heavy SPA**, so
-  `studio_render`'s selectors are best-effort and may need adjusting after
-  a live run — they live in `google_earth_automated/earth_studio_browser.py`
+  `render.py`'s selectors are best-effort and may need adjusting after
+  a live run — they live in `google_earth_automated/browser.py`
   and the selector block at the top of
-  `google_earth_automated/studio_render.py`.
+  `google_earth_automated/render.py`.
 
 Chromium's runtime shared libs and fonts come from Playwright's own
 `--with-deps` list; the `Dockerfile` adds the display/VNC/portal stack and the
@@ -112,7 +115,7 @@ NVIDIA GL loaders on top. `docker/services.sh` (run by both `./run.sh`'s
 entrypoint and the devcontainer's `postStartCommand`) starts a virtual display
 + noVNC on port 6080 — once the container is up, open
 `http://localhost:6080/vnc.html` in a browser on your host to see and interact
-with the Chromium window, which is needed for the headed `studio-login` step
+with the Chromium window, which is needed for the headed `earth login` step
 and the folder picker. Running natively on your host works too, without any of
 this.
 
@@ -136,9 +139,9 @@ on Mesa llvmpipe — both CPU).
 
 ### How to verify
 
-`uv run studio-gpu-check` launches Chromium the same way `studio-render` does
+`uv run earth gpu-check` launches Chromium the same way `earth render` does
 and prints its actual WebGL renderer — a quick check with no Earth Studio or
-login involved. `studio-render` prints the same line at startup, before the
+login involved. `earth render` prints the same line at startup, before the
 render begins; either asks the page for its renderer rather than trusting
 Chromium's launch flags, so it reflects the pipeline Earth Studio's canvas is
 really drawn with:

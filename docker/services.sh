@@ -1,7 +1,7 @@
 #!/bin/sh
 # Bring up the virtual display / VNC / window-manager / D-Bus + portal stack the
 # render automation needs:
-#  - headed Chromium (the `studio-login` step) needs a display; noVNC on 6080
+#  - headed Chromium (the `earth login` step) needs a display; noVNC on 6080
 #    makes it viewable in a normal browser tab.
 #  - Earth Studio's local render opens a native GTK folder picker, which needs a
 #    window manager to be shown at all plus a D-Bus session + xdg-desktop-portal

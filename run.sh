@@ -4,14 +4,14 @@
 # builds the same Dockerfile and passes the same runtime flags.
 #
 #   ./run.sh                                   # interactive shell
-#   ./run.sh uv run studio-login               # one-time Google login (see below)
-#   ./run.sh uv run esp-builder --lat ... --lon ...
-#   ./run.sh uv run studio-render project.esp --headless
+#   ./run.sh uv run earth login                # one-time Google login (see below)
+#   ./run.sh uv run earth build --lat ... --lon ...
+#   ./run.sh uv run earth render project.esp --headless
 #
 # The whole repo is bind-mounted at /workspace, so generated .esp files,
 # rendered frames under out/, and the login profile under .auth/ all land back
 # on the host. noVNC is forwarded on http://localhost:6080/vnc.html for the
-# headed studio-login step.
+# headed `earth login` step.
 #
 # GPU passthrough uses CDI (Docker >= 25). GPUS is a comma-separated list of
 # device indices from `nvidia-ctk cdi list`, or "all":
