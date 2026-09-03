@@ -137,6 +137,9 @@ free for unrelated work — a single render never needs more than one. Pass
 `GPUS=all` for every GPU, or `GPUS=<i>` / `GPUS=<i>,<j>` to pick specific CDI
 device indices (list them with `nvidia-ctk cdi list`).
 
+For scale: a 451-frame, 1920×1080 orbit renders in about 5½ minutes here
+(~1.5 frames/s) on one V100.
+
 ### How to verify
 
 `uv run studio-gpu-check` launches Chromium the same way `studio-render` does
