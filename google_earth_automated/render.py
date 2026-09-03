@@ -180,6 +180,40 @@ def project_name_of(esp_file: Path) -> str:
         return esp_file.stem
 
 
+# Is the project name on screen anywhere the app might be showing it? Checked
+# in the page rather than with a Playwright locator because get_by_text() --
+# what this used to use -- only ever matches rendered *text nodes*, and an
+# editor's project name is at least as likely to live in an editable title
+# field, where a text-node match can never see it. That is what happened: the
+# wait never fired once and burned its full 8s fallback on every render, so the
+# saving it was written for was never actually realised.
+#
+# innerText, not textContent: textContent would also match a name hidden in an
+# off-screen template or a recents list that has not been rendered yet, and
+# firing early here means clicking Render into a half-loaded scene -- a wrong
+# frame, which is far worse than a slow one.
+_PROJECT_NAME_VISIBLE = """
+(name) => {
+    if (document.title.includes(name)) return true;
+    for (const field of document.querySelectorAll('input, textarea')) {
+        if ((field.value ?? '').includes(name)) return true;
+    }
+    return (document.body?.innerText ?? '').includes(name);
+}
+"""
+
+
+def project_name_visible(page: Page, project_name: str) -> bool:
+    """Whether project_name is showing right now. Never raises: a page that
+    can't be probed (mid-navigation, execution context torn down) just counts
+    as not showing it, which costs the blind wait rather than a render.
+    """
+    try:
+        return bool(page.evaluate(_PROJECT_NAME_VISIBLE, project_name))
+    except PlaywrightError:
+        return False
+
+
 def wait_for_project_loaded(
     page: Page, project_name: str | None, *, timeout_ms: int = PROJECT_LOAD_WAIT_MS
 ) -> None:
@@ -196,12 +230,18 @@ def wait_for_project_loaded(
     before importing (see Session.render_esp) -- then its presence proves
     nothing and only the blind wait is left. Same fallback if the name never
     shows: a UI change costs the old behaviour, not a broken render.
+
+    Polled on a fixed interval rather than Playwright's default animation
+    frame: innerText forces a layout, and the scene rebuild this is waiting on
+    is exactly when the machine has no cycles to spare.
     """
     if project_name is None:
         page.wait_for_timeout(timeout_ms)
         return
     try:
-        page.get_by_text(project_name).first.wait_for(timeout=timeout_ms)
+        page.wait_for_function(
+            _PROJECT_NAME_VISIBLE, arg=project_name, timeout=timeout_ms, polling=500
+        )
     except PlaywrightError:
         return  # never appeared -- the wait above already burned the full timeout
     page.wait_for_timeout(SCENE_SETTLE_MS)
@@ -485,12 +525,10 @@ class Session:
         # Checked before the import, because the name appearing *afterwards* is
         # only a load signal if it wasn't there to begin with -- a recents list
         # or a re-import of the same project would otherwise match instantly and
-        # send us on to the Render button mid-load.
+        # send us on to the Render button mid-load. Same predicate as the wait
+        # itself, so the two can't disagree about what "on screen" means.
         project_name = project_name_of(esp_file)
-        try:
-            if page.get_by_text(project_name).count() > 0:
-                project_name = None
-        except PlaywrightError:
+        if project_name_visible(page, project_name):
             project_name = None
 
         page.click(IMPORT_TOGGLE)
