@@ -2,17 +2,28 @@
 // What is installed in the image, and available tags: https://github.com/bare-devcontainer/images
 {
   "name": "Python (uv)",
-  "image": "ghcr.io/bare-devcontainer/uv:trixie",
+  // Builds the same image as ./run.sh -- apt packages, Playwright's Chromium,
+  // and the display/portal libs all live in the Dockerfile now.
+  "build": { "dockerfile": "../Dockerfile", "context": ".." },
   "containerUser": "root",
   "remoteUser": "root",
   "init": true,
-  // /dev/fuse + CAP_SYS_ADMIN: Earth Studio's local Image Sequence render asks
-  // for an output folder via the File System Access API, which Chromium
-  // confirms through xdg-desktop-portal's Documents portal -- that portal
-  // FUSE-mounts an export dir to hand the chosen path back, and without a real
-  // FUSE device + the capability to mount it, that confirmation hangs forever
-  // (see the Security section in README.md for the tradeoff this accepts).
-  "runArgs": ["--device=/dev/fuse", "--cap-add=SYS_ADMIN"],
+  // Runtime flags that can't live in the Dockerfile; ./run.sh passes the same set.
+  //  - /dev/fuse + CAP_SYS_ADMIN: Earth Studio's local Image Sequence render asks
+  //    for an output folder via the File System Access API, which Chromium
+  //    confirms through xdg-desktop-portal's Documents portal -- that portal
+  //    FUSE-mounts an export dir to hand the chosen path back, and without a real
+  //    FUSE device + the capability to mount it, that confirmation hangs forever
+  //    (see the Security section in README.md for the tradeoff this accepts).
+  //  - nvidia.com/gpu=14,15: hardware WebGL, via CDI (matches run.sh's default).
+  //    Fails to start on a host without those CDI devices -- the repo targets
+  //    this render host.
+  "runArgs": [
+    "--device=/dev/fuse",
+    "--cap-add=SYS_ADMIN",
+    "--device=nvidia.com/gpu=14",
+    "--device=nvidia.com/gpu=15"
+  ],
   "containerEnv": {
     "UV_LINK_MODE": "copy"
   },
@@ -28,24 +39,19 @@
       "type": "volume"
     }
   ],
-  "onCreateCommand": "sh .devcontainer/setup.sh",
   // The claude-data volume starts empty on first mount (Docker only seeds a
   // new volume from the image, not from a live container), so restore the
   // one-time stash left in the (already-persistent) uv-cache volume the
   // first time this fires.
   "postCreateCommand": "if [ ! -e /root/.claude/projects ] && [ -d /root/.cache/uv/claude-backup ]; then cp -a /root/.cache/uv/claude-backup/. /root/.claude/; fi",
-  "postStartCommand": "sh .devcontainer/start-vnc.sh",
+  // Same services script the ./run.sh entrypoint runs.
+  "postStartCommand": "sh docker/services.sh",
   "forwardPorts": [6080],
   "portsAttributes": {
     "6080": {
       "label": "noVNC (headed browser)",
       "onAutoForward": "silent"
     }
-  },
-  "remoteEnv": {
-    "DISPLAY": ":99",
-    "XDG_RUNTIME_DIR": "/tmp/runtime-root",
-    "DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/dbus-session-bus"
   },
   "customizations": {
     "vscode": {

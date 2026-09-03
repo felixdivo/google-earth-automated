@@ -1,16 +1,16 @@
 FROM ghcr.io/bare-devcontainer/uv:trixie
 
 # Everything here runs as root, matching the devcontainer (containerUser: root)
-# and the render automation's needs: apt, the Chromium managed policy under
-# /etc, the pre-granted --no-sandbox, and the SYS_ADMIN-backed folder picker
-# (see the Security section in README.md for the tradeoff this accepts).
+# and the render automation's needs: apt, the pre-granted --no-sandbox, and the
+# SYS_ADMIN-backed folder picker (see the Security section in README.md for the
+# tradeoff this accepts).
 USER root
 
-# System stack, three groups:
+# System stack, three groups. docker/services.sh starts the processes these
+# provide; both the ./run.sh entrypoint and the devcontainer run that script.
 #  - virtual display / VNC / window-manager / D-Bus + portal: the headed
 #    `studio-login` step needs a display, and Earth Studio's native GTK
-#    folder-picker needs a WM plus xdg-desktop-portal to appear at all
-#    (mirrors .devcontainer/setup.sh + start-vnc.sh).
+#    folder-picker needs a WM plus xdg-desktop-portal to appear at all.
 #  - xdotool: drives that folder picker (it is an OS dialog, not page DOM).
 #  - libglvnd / libEGL / libGLES / libGL / libvulkan loaders: Chromium's ANGLE
 #    backend dlopen()s these to reach the NVIDIA driver for hardware WebGL.

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build the image (cheap when cached) and run a command inside the container
-# with the host's NVIDIA GPU passed through for hardware WebGL.
+# with the host's NVIDIA GPU passed through for hardware WebGL. The devcontainer
+# builds the same Dockerfile and passes the same runtime flags.
 #
 #   ./run.sh                                   # interactive shell
 #   ./run.sh uv run studio-login               # one-time Google login (see below)

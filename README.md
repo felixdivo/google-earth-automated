@@ -33,11 +33,10 @@ bearing, leg duration, frame rate, resolution, open vs. closed loop, ...).
 
 ## Rendering a project to an image sequence
 
-On a Linux host with an NVIDIA GPU, use `./run.sh` (see *Running with Docker*
-below) and prefix each command with it. Otherwise, one-time setup (the
-devcontainer already runs `uv run playwright install --with-deps chromium`
-via `onCreateCommand`; run it yourself first if you're not using the
-devcontainer):
+The easiest way to run this is `./run.sh` (see *Running with Docker* below) or
+the devcontainer — both build the same image with the browser and display
+stack already in place. To run it directly on your host instead, first
+`uv run playwright install --with-deps chromium`, then:
 
 ```
 uv run studio-login
@@ -60,8 +59,8 @@ directly into `out/frankfurt_hauptbahnhof_orbit/` by default (Earth Studio
 nests frames under a project-name subfolder of `--output-dir` on its own).
 Turning that sequence into a video is a separate, later step, not covered
 here. Add `--dry-run` to validate the `.esp` file and see the planned steps
-without opening a browser, or `--headless` once the automation is verified to
-work unattended.
+without opening a browser. The render runs headed (on the virtual display) —
+the native folder picker it needs never appears in headless Chromium.
 
 ### Running with Docker
 
@@ -74,13 +73,14 @@ repo bind-mounted, noVNC on port 6080, and — on a Linux host with the
 ./run.sh uv run studio-gpu-check                    # verify the GPU is usable
 ./run.sh uv run studio-login                        # one-time Google login (via noVNC)
 ./run.sh uv run esp-builder --lat ... --lon ...     # generate a project
-./run.sh uv run studio-render <project>.esp --headless
+./run.sh uv run studio-render <project>.esp
 ```
 
-The `GPUS` variable picks which GPUs to expose (default: the last two — see
-*The render host* under GPU acceleration); with none it falls back to software
-rendering. This does not need VS Code or the devcontainer CLI —
-`.devcontainer/` remains for that workflow.
+The `GPUS` variable picks which GPUs to expose — a comma-separated list of CDI
+device indices (`nvidia-ctk cdi list`), or `all`; the default is the last two.
+With no GPU it falls back to software rendering. This does not need VS Code or
+the devcontainer CLI; the devcontainer (which builds the same `Dockerfile` and
+passes the same GPU devices) remains for that workflow.
 
 ### Technical details
 
@@ -89,14 +89,15 @@ Two things make this harder than a normal Playwright script:
 - **Earth Studio grants the output folder through the browser's File System
   Access API**, which Chromium serves as a *native OS dialog* — outside
   Playwright's control entirely. `studio_render` drives it with `xdotool`
-  instead (see `select_output_folder()`), which depends on the devcontainer's
-  D-Bus/portal/window-manager stack and on the `/dev/fuse` + `CAP_SYS_ADMIN`
-  grant described in Security below. Two more native prompts follow — "Allow
-  this site to view and copy files?" and "Save changes to `<folder>`?" —
-  which `start_render()` accepts from the keyboard (Tab to the grant button,
-  Enter). A managed-policy file used to pre-grant these, but Playwright's
-  bundled Chrome for Testing ignores enterprise policy, so the prompts really
-  do appear; the grant then persists in the profile for later runs.
+  instead (see `select_output_folder()`), which depends on the
+  D-Bus/portal/window-manager stack `docker/services.sh` brings up and on the
+  `/dev/fuse` + `CAP_SYS_ADMIN` grant described in Security below. Two more
+  native prompts follow — "Allow this site to view and copy files?" and "Save
+  changes to `<folder>`?" — which `start_render()` accepts from the keyboard
+  (Tab to the grant button, Enter). A managed-policy file used to pre-grant
+  these, but Playwright's bundled Chrome for Testing ignores enterprise
+  policy, so the prompts really do appear; the grant then persists in the
+  profile for later runs.
 - **Earth Studio's UI is an undocumented, JS-heavy SPA**, so
   `studio_render`'s selectors are best-effort and may need adjusting after
   a live run — they live in `google_earth_automated/earth_studio_browser.py`
@@ -104,12 +105,14 @@ Two things make this harder than a normal Playwright script:
   `google_earth_automated/studio_render.py`.
 
 Chromium's runtime shared libs and fonts come from Playwright's own
-`--with-deps` list, so `--headless` works out of the box; the devcontainer adds
-just the display/VNC/portal stack on top. It starts a virtual display + noVNC
-(`.devcontainer/start-vnc.sh`) on port 6080 for the headed `studio-login`
-step — once the container is up, open `http://localhost:6080/vnc.html` in a
-browser on your host to see and interact with the Chromium window. Running
-natively on your host works too, without any of this.
+`--with-deps` list; the `Dockerfile` adds the display/VNC/portal stack and the
+NVIDIA GL loaders on top. `docker/services.sh` (run by both `./run.sh`'s
+entrypoint and the devcontainer's `postStartCommand`) starts a virtual display
++ noVNC on port 6080 — once the container is up, open
+`http://localhost:6080/vnc.html` in a browser on your host to see and interact
+with the Chromium window, which is needed for the headed `studio-login` step
+and the folder picker. Running natively on your host works too, without any of
+this.
 
 ## GPU acceleration
 
@@ -120,9 +123,9 @@ and in software (SwiftShader) otherwise — software is several times slower.
 that engages the GPU (plain Chromium picks SwiftShader, `--use-angle=gl` lands
 on Mesa llvmpipe — both CPU).
 
-- **Linux host with an NVIDIA GPU** — `./run.sh` (see *Running with Docker*
-  above) passes the GPU in via CDI; nothing else to configure. The
-  devcontainer requests no GPU, so it always renders in software.
+- **Linux host with an NVIDIA GPU** — `./run.sh` and the devcontainer both
+  pass the GPU in via CDI (`--device=nvidia.com/gpu=…`); nothing else to
+  configure.
 - **Windows (Docker Desktop, WSL2 backend)** — untested here; would need
   WSL2's `/dev/dxg` + `/usr/lib/wsl/lib` bind-mounted into the container and
   the ANGLE backend switched to `d3d12`.
@@ -169,11 +172,10 @@ automation work. Worth knowing before you run it:
   removed) — this is what gets past Google's bot-detection at login, but it
   also makes the browser indistinguishable from a real user session to any
   other site it visits.
-- **File System Access is pre-granted to every site**
-  (`/etc/chromium/policies/managed/earth-studio.json`) — this browser profile
-  will hand read/write access to a chosen folder to any page that asks,
-  without prompting. It exists only to drive Earth Studio; don't browse with
-  this profile.
+- **File System Access grants persist in the profile** — `start_render()`
+  auto-accepts Earth Studio's "view and copy files" / "save changes" prompts,
+  and Chromium then remembers the grant for that folder. This profile exists
+  only to drive Earth Studio; don't browse with it.
 - **Chromium runs with `--no-sandbox`** — an automatic consequence of running
   as root, and it removes Chromium's own internal process-sandboxing against
   malicious content it renders.

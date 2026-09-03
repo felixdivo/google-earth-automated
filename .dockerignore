@@ -1,0 +1,11 @@
+# Keep the build context small -- and keep the live Google session in .auth/
+# out of the image layers that `COPY . .` would otherwise bake it into.
+.git
+.venv
+.auth
+out
+*.esp
+__pycache__/
+.ruff_cache/
+.claude
+*.egg-info/
