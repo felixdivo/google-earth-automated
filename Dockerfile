@@ -21,14 +21,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libglvnd0 libgl1 libglx0 libegl1 libgles2 libgbm1 libvulkan1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Pre-grant the File System Access API so Earth Studio's local Image Sequence
-# render writes frames without a permission bubble (see .devcontainer/setup.sh
-# for why a managed policy rather than a screen-coordinate click).
-RUN mkdir -p /etc/chromium/policies/managed \
-    && printf '%s\n' \
-        '{ "DefaultFileSystemReadGuardSetting": 1, "DefaultFileSystemWriteGuardSetting": 1 }' \
-        > /etc/chromium/policies/managed/earth-studio.json
-
 WORKDIR /workspace
 
 # Dependency layer: resolves from the lockfile only, so it is cached across

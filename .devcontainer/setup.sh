@@ -13,16 +13,8 @@ apt-get install -y --no-install-recommends \
 # per-distro list.
 uv run playwright install --with-deps chromium
 
-# Pre-grant the File System Access API so Earth Studio's local Image Sequence
-# render writes frames without a permission bubble. Those bubbles are drawn
-# inside the browser window rather than as DOM or separate X windows, so the
-# only way to accept them is a screen-coordinate click -- which silently
-# breaks whenever the window geometry or UI font metrics shift. A managed
-# policy removes the prompt entirely; 1 means "allow", 3 would be "ask".
-mkdir -p /etc/chromium/policies/managed
-cat > /etc/chromium/policies/managed/earth-studio.json <<'JSON'
-{
-  "DefaultFileSystemReadGuardSetting": 1,
-  "DefaultFileSystemWriteGuardSetting": 1
-}
-JSON
+# The File System Access prompts Earth Studio's local render raises ("Allow
+# this site to view and copy files?", "Save changes to <dir>?") are accepted
+# from the keyboard by studio_render.start_render() -- Playwright's bundled
+# Chrome for Testing ignores the managed-policy file that used to live here,
+# so there is nothing to pre-grant.

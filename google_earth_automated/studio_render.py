@@ -21,6 +21,13 @@ depends on the devcontainer's D-Bus/portal/window-manager stack
 devcontainer.json and the Security section in README.md) -- without those,
 the dialog opens but its confirmation hangs forever.
 
+Picking the folder is followed by two more native prompts -- "Allow this site
+to view and copy files?" (read) and "Save changes to <dir>?" (write) -- also
+browser UI rather than page DOM. Playwright's bundled Chrome for Testing
+ignores the enterprise policy that was meant to pre-grant these (it reads
+policies from a path that build doesn't honor), so start_render() accepts
+them from the keyboard, same as the folder picker.
+
 Earth Studio's UI is an undocumented, JS-heavy SPA, so the selectors below are
 best-effort and may need adjusting after the first live run -- this is the one
 place to fix them.
@@ -33,6 +40,7 @@ import sys
 import time
 from pathlib import Path
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page, sync_playwright
 
 from .earth_studio_browser import (
@@ -52,6 +60,10 @@ FORMAT_IMAGE_SEQUENCE_OPTION = "text=Image sequence (.jpeg)"
 CHOOSE_FOLDER_BUTTON = "#output-dir-btn"  # reads "Choose folder" only the first time; a remembered destination replaces the label with its name
 START_RENDER_BUTTON = "button[data-action='click:onStartClick']"
 # -----------------------------------------------------------------------------
+
+# Title of the Chrome-for-Testing window, for aiming keyboard input at the
+# native File System Access prompts (which carry no window title of their own).
+BROWSER_WINDOW_TITLE = "Google Earth Studio"
 
 RENDER_TIMEOUT_MS = (
     3 * 60 * 60 * 1000
@@ -139,6 +151,49 @@ def select_output_folder(page: Page, output_dir: Path, *, dialog_timeout_s: floa
     )
 
 
+def _frames_on_disk(output_dir: Path) -> int:
+    return len(list(output_dir.rglob("*.jpg"))) + len(list(output_dir.rglob("*.jpeg")))
+
+
+def start_render(page: Page, output_dir: Path, *, attempts: int = 4) -> None:
+    """Click Start and clear the native File System Access prompts that follow.
+
+    Earth Studio raises up to two of them -- "Allow this site to view and copy
+    files?" then "Save changes to <dir>?" -- and each blocks the render until
+    answered. They are browser chrome, not page DOM, so they are accepted from
+    the keyboard: focus defaults to the dismiss button, one Tab moves to the
+    grant button ("Allow" / "Save changes"), Enter confirms. Clicking Start
+    again after each grant advances to the next prompt (and, once both are
+    granted, actually starts the render). A grant persists in the browser
+    profile, so on later runs with the same output folder no prompt appears
+    and the first click is enough.
+    """
+    wid = _find_window(BROWSER_WINDOW_TITLE, timeout_s=10.0)
+    baseline = _frames_on_disk(output_dir)  # a re-render into a populated dir
+
+    for _ in range(attempts):
+        try:
+            page.click(START_RENDER_BUTTON, timeout=5000)
+        except PlaywrightError:
+            pass  # button gone means the render already started
+        time.sleep(2.5)
+        if _frames_on_disk(output_dir) > baseline:
+            return
+        if wid is not None:
+            _xdotool("windowactivate", "--sync", wid)
+            time.sleep(0.3)
+            _xdotool("key", "--window", wid, "Tab")
+            time.sleep(0.3)
+            _xdotool("key", "--window", wid, "Return")
+        time.sleep(1.5)
+
+    if _frames_on_disk(output_dir) <= baseline:
+        raise RuntimeError(
+            "render did not start after accepting the File System Access prompts -- "
+            "the prompt layout or Start selector may have changed"
+        )
+
+
 def wait_for_frames(
     output_dir: Path,
     *,
@@ -165,7 +220,7 @@ def wait_for_frames(
     last_report = 0.0
     total = expected_frame_count or "?"
     while time.monotonic() < deadline:
-        count = len(list(output_dir.rglob("*.jpg"))) + len(list(output_dir.rglob("*.jpeg")))
+        count = _frames_on_disk(output_dir)
         if expected_frame_count is not None and count >= expected_frame_count:
             print(f"Rendered {count}/{total} frames", flush=True)
             return
@@ -255,11 +310,7 @@ def render(
         page.click(FORMAT_IMAGE_SEQUENCE_OPTION)
 
         select_output_folder(page, output_dir)
-
-        # No permission bubbles to click through: the devcontainer pre-grants
-        # File System Access via Chromium's managed-policy file (see
-        # .devcontainer/setup.sh).
-        page.click(START_RENDER_BUTTON)
+        start_render(page, output_dir)
         wait_for_frames(
             output_dir, expected_frame_count=expected_frame_count, timeout_ms=RENDER_TIMEOUT_MS
         )

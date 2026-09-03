@@ -91,14 +91,12 @@ Two things make this harder than a normal Playwright script:
   Playwright's control entirely. `studio_render` drives it with `xdotool`
   instead (see `select_output_folder()`), which depends on the devcontainer's
   D-Bus/portal/window-manager stack and on the `/dev/fuse` + `CAP_SYS_ADMIN`
-  grant described in Security below. The *permission* prompts that normally
-  follow ("Allow this site to view and copy files?", "Save changes to
-  <folder>?") are pre-approved by a Chromium managed-policy file that
-  `.devcontainer/setup.sh` writes to `/etc/chromium/policies/managed/`, so
-  there is nothing to click through. Earlier revisions clicked those bubbles
-  at a hardcoded screen coordinate; that broke silently whenever the window
-  geometry or UI font metrics shifted, which is exactly what a devcontainer
-  rebuild can change.
+  grant described in Security below. Two more native prompts follow — "Allow
+  this site to view and copy files?" and "Save changes to `<folder>`?" —
+  which `start_render()` accepts from the keyboard (Tab to the grant button,
+  Enter). A managed-policy file used to pre-grant these, but Playwright's
+  bundled Chrome for Testing ignores enterprise policy, so the prompts really
+  do appear; the grant then persists in the profile for later runs.
 - **Earth Studio's UI is an undocumented, JS-heavy SPA**, so
   `studio_render`'s selectors are best-effort and may need adjusting after
   a live run — they live in `google_earth_automated/earth_studio_browser.py`
