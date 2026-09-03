@@ -86,7 +86,23 @@ PROJECT_LOAD_WAIT_MS = 8000  # importing a project re-renders the whole scene
 # Render button. The name can land while the SPA is still rebuilding around it,
 # and RENDER_BUTTON is present in the toolbar the whole time -- so Playwright's
 # own actionability wait offers no protection against clicking too early.
-SCENE_SETTLE_MS = 1500
+#
+# 6s, not the 1500ms this started as, because Earth Studio streams its imagery
+# in asynchronously and offers no "finished streaming" signal: the name appears
+# long before the terrain has resolved, and rendering then produces a visibly
+# coarser frame. Measured by rendering the same 10-frame project three ways and
+# comparing pixels. Two runs of the unchanged code differ from each other by
+# 0.05-0.11% of pixels (imagery tiles load slightly differently every time),
+# which sets the noise floor. At 1500ms this code differed from that baseline by
+# 3.2-8.0% -- 50-80x the floor, i.e. really rendering less detail. At 6000ms it
+# is back to 0.06-0.10%, inside the floor.
+#
+# So most of what the project-name signal saves has to be given back to keep the
+# output right: the whole wait lands near 6.7s against the 8s blind sleep it
+# replaced. It is still the better shape -- a scene that settles quickly is no
+# longer charged the full 8s -- but it is worth ~1.3s, not the ~6s it looks like
+# with a short settle. Re-tune with the same pixel comparison, never by eye.
+SCENE_SETTLE_MS = 6000
 
 
 def _xdotool(*args: str) -> str:
