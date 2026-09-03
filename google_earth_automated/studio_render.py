@@ -16,10 +16,10 @@ Local Image Sequence rendering grants filesystem access via the browser's
 File System Access API (window.showDirectoryPicker()), which Chromium serves
 as a *native OS dialog* -- outside Playwright's DOM/CDP control entirely.
 select_output_folder() below drives that dialog with xdotool instead, and
-depends on the devcontainer's D-Bus/portal/window-manager stack
-(.devcontainer/start-vnc.sh) plus /dev/fuse + CAP_SYS_ADMIN (see
-devcontainer.json and the Security section in README.md) -- without those,
-the dialog opens but its confirmation hangs forever.
+depends on the D-Bus/portal/window-manager stack docker/services.sh brings up
+plus /dev/fuse + CAP_SYS_ADMIN (see the Dockerfile, run.sh / devcontainer.json,
+and the Security section in README.md) -- without those, the dialog opens but
+its confirmation hangs forever.
 
 Picking the folder is followed by two more native prompts -- "Allow this site
 to view and copy files?" (read) and "Save changes to <dir>?" (write) -- also
@@ -155,37 +155,54 @@ def _frames_on_disk(output_dir: Path) -> int:
     return len(list(output_dir.rglob("*.jpg"))) + len(list(output_dir.rglob("*.jpeg")))
 
 
-def _accept_native_prompt(window_id: str | None) -> None:
-    """Accept a native File System Access prompt from the keyboard: focus
-    defaults to the dismiss button, one Tab reaches the grant button ("Allow"
-    / "Save changes"), Enter confirms."""
+# Where the grant button ("Allow" / "Save changes") sits when the browser fills
+# the 1280x800 virtual display -- both prompts anchor just under the omnibox and
+# their grant buttons overlap around this point. Used only as a fallback.
+_GRANT_BUTTON_XY = ("780", "130")
+
+
+def _accept_native_prompt(window_id: str | None, *, click_fallback: bool) -> None:
+    """Accept a native File System Access prompt. Focus defaults to the deny
+    button; one Tab reaches the grant button ("Allow" / "Save changes"), Enter
+    confirms.
+
+    Keyboard first, via XTEST (`xdotool key` with no `--window`) to the focused
+    window -- Chromium's permission UI ignores the XSendEvent that `--window`
+    uses, unlike the GTK folder picker. fluxbox is occasionally slow to actually
+    focus the activated window, so once the keyboard path has missed a couple of
+    times, also click the grant button at its fixed on-screen position.
+    """
     if window_id is None:
         return
     _xdotool("windowactivate", "--sync", window_id)
-    time.sleep(0.3)
-    _xdotool("key", "--window", window_id, "Tab")
-    time.sleep(0.3)
-    _xdotool("key", "--window", window_id, "Return")
-    time.sleep(1.0)
+    time.sleep(0.6)
+    _xdotool("key", "--clearmodifiers", "Tab")
+    time.sleep(0.4)
+    _xdotool("key", "--clearmodifiers", "Return")
+    time.sleep(0.6)
+    if click_fallback:
+        _xdotool("mousemove", *_GRANT_BUTTON_XY, "click", "1")
+        time.sleep(0.6)
+    time.sleep(0.6)
 
 
-def start_render(page: Page, *, attempts: int = 6) -> None:
+def start_render(page: Page, *, attempts: int = 8) -> None:
     """Click Start and clear the native File System Access prompts that follow.
 
     Earth Studio raises up to two of them -- "Allow this site to view and copy
     files?" then "Save changes to <dir>?" -- and each blocks the render until
-    answered. They are browser chrome, not page DOM, so xdotool can't see
-    them; instead this keys through them blindly, using the one DOM signal
-    that is reliable: while a prompt is up the render *dialog* (with its Start
-    button) is still on screen, and it's replaced by the progress view the
-    moment the render actually begins. So: click Start, and if the button is
-    still there shortly after, a prompt is blocking -- accept it and click
-    again. A grant persists in the profile, so later runs with the same folder
-    see no prompt and the first click is enough.
+    answered. They are browser chrome, not page DOM, so _accept_native_prompt()
+    clears them blind; the one reliable DOM signal drives the loop: while a
+    prompt is up the render *dialog* (with its Start button) is still on
+    screen, and it's replaced by the progress view the moment the render
+    actually begins. So: click Start, and if the button is still there shortly
+    after, a prompt is blocking -- accept it and click again. A grant persists
+    in the profile, so later runs with the same folder see no prompt and the
+    first click is enough.
     """
     window_id = _find_window(BROWSER_WINDOW_TITLE, timeout_s=10.0)
 
-    for _ in range(attempts):
+    for attempt in range(attempts):
         try:
             page.click(START_RENDER_BUTTON, timeout=5000)
         except PlaywrightError:
@@ -194,7 +211,8 @@ def start_render(page: Page, *, attempts: int = 6) -> None:
             page.wait_for_selector(START_RENDER_BUTTON, state="hidden", timeout=6000)
             return
         except PlaywrightError:
-            _accept_native_prompt(window_id)  # Start still there -> prompt blocking
+            # Start still there -> a prompt is blocking.
+            _accept_native_prompt(window_id, click_fallback=attempt >= 2)
 
     raise RuntimeError(
         "render did not start after accepting the File System Access prompts -- "
