@@ -129,17 +129,6 @@ on Mesa llvmpipe — both CPU).
 - **Mac (Docker Desktop, any chip)** — not possible. Docker Desktop's VM uses
   `Hypervisor.framework`, which offers no GPU passthrough.
 
-### The render host
-
-The machine this is set up on has 16 Tesla V100 GPUs. `run.sh` exposes only
-the last two to the container by default (`GPUS=14,15`), leaving the other 14
-free for unrelated work — a single render never needs more than one. Pass
-`GPUS=all` for every GPU, or `GPUS=<i>` / `GPUS=<i>,<j>` to pick specific CDI
-device indices (list them with `nvidia-ctk cdi list`).
-
-For scale: a 451-frame, 1920×1080 orbit renders in about 5½ minutes here
-(~1.5 frames/s) on one V100.
-
 ### How to verify
 
 `uv run studio-gpu-check` launches Chromium the same way `studio-render` does
