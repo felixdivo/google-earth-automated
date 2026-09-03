@@ -33,9 +33,11 @@ bearing, leg duration, frame rate, resolution, open vs. closed loop, ...).
 
 ## Rendering a project to an image sequence
 
-One-time setup (the devcontainer already runs `uv run playwright install
---with-deps chromium` via `onCreateCommand`; run it yourself first if you're
-not using the devcontainer):
+On a Linux host with an NVIDIA GPU, use `./run.sh` (see *Running with Docker*
+below) and prefix each command with it. Otherwise, one-time setup (the
+devcontainer already runs `uv run playwright install --with-deps chromium`
+via `onCreateCommand`; run it yourself first if you're not using the
+devcontainer):
 
 ```
 uv run studio-login
@@ -60,6 +62,24 @@ Turning that sequence into a video is a separate, later step, not covered
 here. Add `--dry-run` to validate the `.esp` file and see the planned steps
 without opening a browser, or `--headless` once the automation is verified to
 work unattended.
+
+### Running with Docker
+
+`./run.sh` builds the image (`Dockerfile`) and runs a command in it with the
+repo bind-mounted, noVNC on port 6080, and — on a Linux host with the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/)
+— the GPU passed through via CDI for hardware-accelerated rendering:
+
+```
+./run.sh uv run studio-gpu-check                    # verify the GPU is usable
+./run.sh uv run studio-login                        # one-time Google login (via noVNC)
+./run.sh uv run esp-builder --lat ... --lon ...     # generate a project
+./run.sh uv run studio-render <project>.esp --headless
+```
+
+`GPUS=0 ./run.sh ...` limits it to one GPU (default: `all`); with no GPU it
+falls back to software rendering. This does not need VS Code or the
+devcontainer CLI — `.devcontainer/` remains for that workflow.
 
 ### Technical details
 
@@ -94,36 +114,30 @@ natively on your host works too, without any of this.
 
 ## GPU acceleration
 
-Rendering runs entirely in software by default (Chromium falls back to
-SwiftShader) since the devcontainer requests no GPU device — a hardcoded
-device path that doesn't exist on the host would fail to start the container
-outright. This makes renders noticeably slower than the same project open in
-a real, GPU-accelerated browser on your host. Whether you can fix that
-depends on the host:
+Chromium renders Earth Studio's WebGL canvas on the GPU when one is available
+and in software (SwiftShader) otherwise — software is several times slower.
+`launch_context()` passes `--use-gl=angle --use-angle=vulkan
+--ignore-gpu-blocklist`; on the render host that Vulkan path is the only combo
+that engages the GPU (plain Chromium picks SwiftShader, `--use-angle=gl` lands
+on Mesa llvmpipe — both CPU).
 
-- **Windows (Docker Desktop, WSL2 backend)** — possible, via WSL2's `/dev/dxg`
-  + Mesa `d3d12` translation layer. Merge into `devcontainer.json`:
-  ```json
-  "runArgs": ["--device=/dev/dxg"],
-  "mounts": [
-    {"source": "/usr/lib/wsl/lib", "target": "/usr/lib/wsl/lib", "type": "bind"}
-  ],
-  "containerEnv": {"LD_LIBRARY_PATH": "/usr/lib/wsl/lib"}
-  ```
-  Untested from this project's (Mac-based) development environment — verify
-  it actually engages hardware rendering (Chromium's process list should no
-  longer include `--enable-unsafe-swiftshader`) before relying on it.
-- **Mac (Docker Desktop, any chip)** — not possible today. Docker Desktop's VM
-  uses `Hypervisor.framework`, which Apple gives no GPU passthrough through at
-  all.
-- **Native Linux Docker host** — add `--device=/dev/dri` to `runArgs` to pass
-  the host's render node straight through.
+- **Linux host with an NVIDIA GPU** — `./run.sh` (see *Running with Docker*
+  above) passes the GPU in via CDI; nothing else to configure. The
+  devcontainer requests no GPU, so it always renders in software.
+- **Windows (Docker Desktop, WSL2 backend)** — untested here; would need
+  WSL2's `/dev/dxg` + `/usr/lib/wsl/lib` bind-mounted into the container and
+  the ANGLE backend switched to `d3d12`.
+- **Mac (Docker Desktop, any chip)** — not possible. Docker Desktop's VM uses
+  `Hypervisor.framework`, which offers no GPU passthrough.
 
 ### How to verify
 
-`studio-render` reports this at startup, before the render begins — it asks
-the page for its actual WebGL renderer rather than trusting Chromium's launch
-flags, so it reflects the pipeline Earth Studio's canvas is really drawn with:
+`uv run studio-gpu-check` launches Chromium the same way `studio-render` does
+and prints its actual WebGL renderer — a quick check with no Earth Studio or
+login involved. `studio-render` prints the same line at startup, before the
+render begins; either asks the page for its renderer rather than trusting
+Chromium's launch flags, so it reflects the pipeline Earth Studio's canvas is
+really drawn with:
 
 ```
 GPU: not in use -- falling back to software rendering, expect a slow render (see README, 'GPU acceleration')
@@ -131,9 +145,10 @@ GPU: not in use -- falling back to software rendering, expect a slow render (see
 ```
 
 A working GPU reports `GPU: in use, hardware-accelerated` instead, with a
-renderer naming real hardware (`ANGLE (NVIDIA GeForce ...)`,
-`ANGLE (Intel, Mesa ...)`, `D3D12 (...)` under WSL2). Anything mentioning
-SwiftShader, llvmpipe, or softpipe is CPU rasterization. For the full picture,
+renderer naming real hardware (`ANGLE (NVIDIA, Vulkan 1.4 (NVIDIA Tesla
+V100...), NVIDIA)` via `./run.sh`, `ANGLE (Intel, Mesa ...)`, `D3D12 (...)`
+under WSL2). Anything mentioning SwiftShader, llvmpipe, or softpipe is CPU
+rasterization. For the full picture,
 open `chrome://gpu` in the noVNC-visible browser
 (`http://localhost:6080/vnc.html`) and check the *Graphics Feature Status*
 table.

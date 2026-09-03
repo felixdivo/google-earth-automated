@@ -42,7 +42,23 @@ def launch_context(playwright: Playwright, *, headless: bool = False) -> Browser
         # --no-sandbox (required to run Chromium as root) would otherwise
         # show. It shifts the page viewport down by its height and is pure
         # noise in the noVNC view of a headed run.
-        args=["--disable-blink-features=AutomationControlled", "--test-type"],
+        #
+        # The --use-angle=vulkan trio routes ANGLE (and so Earth Studio's
+        # WebGL canvas) through the NVIDIA driver's Vulkan backend. On this
+        # host that is the only combo that engages the GPU: plain Chromium
+        # picks SwiftShader, and --use-angle=gl lands on Mesa llvmpipe -- both
+        # CPU. Needs the GPU passed into the container (run.sh does this via
+        # CDI); without a device it harmlessly falls back to SwiftShader.
+        # --ignore-gpu-blocklist is required because Chromium blocklists the
+        # headless GPU path by default.
+        args=[
+            "--disable-blink-features=AutomationControlled",
+            "--test-type",
+            "--use-gl=angle",
+            "--use-angle=vulkan",
+            "--enable-features=Vulkan",
+            "--ignore-gpu-blocklist",
+        ],
         ignore_default_args=["--enable-automation"],
     )
 
