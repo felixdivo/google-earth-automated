@@ -77,10 +77,10 @@ repo bind-mounted, noVNC on port 6080, and — on a Linux host with the
 ./run.sh uv run studio-render <project>.esp --headless
 ```
 
-`GPUS` picks which GPUs to expose — a comma-separated list of CDI device
-indices, or `all` (default: `14,15`, the last two on the render host). With no
-GPU it falls back to software rendering. This does not need VS Code or the
-devcontainer CLI — `.devcontainer/` remains for that workflow.
+The `GPUS` variable picks which GPUs to expose (default: the last two — see
+*The render host* under GPU acceleration); with none it falls back to software
+rendering. This does not need VS Code or the devcontainer CLI —
+`.devcontainer/` remains for that workflow.
 
 ### Technical details
 
@@ -130,6 +130,14 @@ on Mesa llvmpipe — both CPU).
   the ANGLE backend switched to `d3d12`.
 - **Mac (Docker Desktop, any chip)** — not possible. Docker Desktop's VM uses
   `Hypervisor.framework`, which offers no GPU passthrough.
+
+### The render host
+
+The machine this is set up on has 16 Tesla V100 GPUs. `run.sh` exposes only
+the last two to the container by default (`GPUS=14,15`), leaving the other 14
+free for unrelated work — a single render never needs more than one. Pass
+`GPUS=all` for every GPU, or `GPUS=<i>` / `GPUS=<i>,<j>` to pick specific CDI
+device indices (list them with `nvidia-ctk cdi list`).
 
 ### How to verify
 
