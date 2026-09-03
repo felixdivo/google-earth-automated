@@ -10,6 +10,7 @@ dependencies = ["rich>=13", "playwright>=1.47,<2"]
 esp-builder = "google_earth_automated.esp_builder:main"
 studio-login = "google_earth_automated.studio_login:main"
 studio-render = "google_earth_automated.studio_render:main"
+studio-gpu-check = "google_earth_automated.gpu_check:main"
 
 [build-system]
 requires = ["hatchling"]
