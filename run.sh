@@ -12,15 +12,26 @@
 # on the host. noVNC is forwarded on http://localhost:6080/vnc.html for the
 # headed studio-login step.
 #
-# GPU passthrough uses CDI (Docker >= 25). Override which GPUs are visible with
-#   GPUS=0 ./run.sh ...            (a single index)
-#   GPUS=0,1,2 ./run.sh ...        (a list)
-# Default is "all".
+# GPU passthrough uses CDI (Docker >= 25). GPUS is a comma-separated list of
+# device indices from `nvidia-ctk cdi list`, or "all":
+#   GPUS=all ./run.sh ...          # every GPU
+#   GPUS=0 ./run.sh ...            # just GPU 0
+# Default is the last two GPUs on this 16-GPU host, leaving the rest free.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE=google-earth-automated
-GPUS="${GPUS:-all}"
+GPUS="${GPUS:-14,15}"
+
+gpu_args=()
+if [ "$GPUS" = "all" ]; then
+    gpu_args=(--device "nvidia.com/gpu=all")
+else
+    IFS=',' read -ra _gpus <<<"$GPUS"
+    for g in "${_gpus[@]}"; do
+        gpu_args+=(--device "nvidia.com/gpu=${g}")
+    done
+fi
 
 mkdir -p "$REPO/.auth" "$REPO/out"
 
@@ -29,7 +40,7 @@ docker build -t "$IMAGE" "$REPO"
 exec docker run --rm -it \
     --name google-earth-automated \
     --init \
-    --device "nvidia.com/gpu=${GPUS}" \
+    "${gpu_args[@]}" \
     --device /dev/fuse \
     --cap-add SYS_ADMIN \
     --publish 6080:6080 \

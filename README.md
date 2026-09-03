@@ -77,8 +77,9 @@ repo bind-mounted, noVNC on port 6080, and — on a Linux host with the
 ./run.sh uv run studio-render <project>.esp --headless
 ```
 
-`GPUS=0 ./run.sh ...` limits it to one GPU (default: `all`); with no GPU it
-falls back to software rendering. This does not need VS Code or the
+`GPUS` picks which GPUs to expose — a comma-separated list of CDI device
+indices, or `all` (default: `14,15`, the last two on the render host). With no
+GPU it falls back to software rendering. This does not need VS Code or the
 devcontainer CLI — `.devcontainer/` remains for that workflow.
 
 ### Technical details
