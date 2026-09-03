@@ -87,23 +87,34 @@ page open for as long as it runs, instead of launching a fresh browser per
 request the way `earth render` does. `GET /frame` takes `lat`/`lon`/`alt`
 (camera position; `alt` in meters above sea level), `heading` (compass
 bearing, default `0`) and `tilt` (degrees from straight down, default `45`),
-optionally `width`/`height`, and responds with the rendered frame as
-`image/jpeg` — around a minute, nearly all of it fixed cost in Earth Studio's
-own UI rather than in drawing the frame. `GET /health` reports readiness. The
-server keeps no frames on disk between requests — nothing is written to `out/`
-or anywhere else in the repo — and, since there's no auth on this endpoint and
-it drives a logged-in Google session, it binds `127.0.0.1` by default
-(`--host` to change that). See `uv run earth serve --help` for the full
-option list, and *Running with Docker* below for reaching it from the host
-when running in a container.
+and responds with the frame as `image/jpeg` — measured at 2.6–7.7s per
+request on a V100 at 1920x1080, most of it Earth Studio drawing. `GET /health`
+reports readiness.
 
-> **Known limitation: one frame per server run.** The second `GET /frame`
-> fails with a 30s timeout looking for Earth Studio's import control. Importing
-> a project needs the project browser, and once a render has happened the app
-> is in the editor, which has no import control and no route back to the
-> browser — reloading restores the editor, not the project browser. So the warm
-> page this command is built around currently only pays off for the first
-> request. Restart `earth serve` between frames until this is fixed.
+Frame size is set once per server with `--width`/`--height` rather than per
+request: it is the one property of a frame that cannot be changed without
+importing a new project, which would cost more than the option is worth.
+
+The server keeps no frames on disk — nothing is written to `out/` or anywhere
+else in the repo — and, since there's no auth on this endpoint and it drives a
+logged-in Google session, it binds `127.0.0.1` by default (`--host` to change
+that). See `uv run earth serve --help` for the full option list, and *Running
+with Docker* below for reaching it from the host when running in a container.
+
+Two things make it quick, both of which avoid re-doing per request what Earth
+Studio only needs done once:
+
+- **The project is imported once, at startup.** A request types its camera
+  pose straight into the editor's camera fields (Latitude, Longitude,
+  Altitude, Pan, Tilt) on the project already open, so it pays neither the
+  import nor the whole-scene rebuild an import triggers.
+- **Frames are captured with Earth Studio's own snapshot button**, not the
+  Render panel. It produces the same image at the project's resolution in half
+  the time (median 2.1s against 4.6s, usually byte-identical), and it arrives
+  as an ordinary browser download — so `earth serve` needs no output folder,
+  and none of the native File System Access dialogs described under *Technical
+  details*. `earth render` still uses the Render panel, because a snapshot is
+  one frame and an animation is not.
 
 ### Running with Docker
 
@@ -156,6 +167,16 @@ Two things make this harder than a normal Playwright script:
   a live run — they live in `google_earth_automated/browser.py`
   and the selector block at the top of
   `google_earth_automated/render.py`.
+- **The import control only exists in the project browser.** Once a project is
+  open the app is in the editor, which has no import control and no route back
+  — so a page can be imported into once and must then be re-used in place.
+  That is why `earth serve` moves the camera of one loaded project instead of
+  importing a project per request.
+- **Camera values are not `<input>` elements.** Each one is a `.scrub-input`
+  widget showing a rounded value, which swaps in a contenteditable only once
+  clicked — hence click, select-all, type, and read the value back to confirm
+  it landed (`set_camera_pose()`). A write that silently misses would render a
+  plausible frame of the wrong place, which nothing downstream could detect.
 
 Chromium's runtime shared libs and fonts come from Playwright's own
 `--with-deps` list; the `Dockerfile` adds the display/VNC/portal stack and the
