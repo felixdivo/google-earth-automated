@@ -31,7 +31,25 @@ def command() -> None:
                 "until you can see the Earth Studio project browser, then press "
                 "Enter here...\n"
             )
+
+            # Verified rather than assumed: Earth Studio authenticates through an
+            # App Engine "conflogin" redirect, and a sign-in that stops at the
+            # account chooser or a 2-step prompt leaves a profile that looks
+            # plausible -- cookies get written either way -- but sends every
+            # later `earth render` straight back to the sign-in page. Saying
+            # "Session saved" there costs a whole round trip to discover, so
+            # reload and confirm Earth Studio actually keeps us.
+            page.goto(EARTH_STUDIO_URL)
+            page.wait_for_load_state("domcontentloaded")
+            logged_in = "studio" in page.url
         finally:
             close_quietly(context)
 
+    if not logged_in:
+        raise SystemExit(
+            "login did not complete -- Earth Studio still redirects to the Google "
+            "sign-in page.\nFinish the sign-in (including any 2-step verification) "
+            "and make sure the Earth Studio\nproject browser is on screen before "
+            "pressing Enter, then run `earth login` again."
+        )
     print("Session saved. You can now run `earth render`.")
