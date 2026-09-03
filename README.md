@@ -17,7 +17,7 @@ make sure your use complies with
 [Google's Terms of Service](https://policies.google.com/terms).**
 
 Everything runs through one `earth` command; `uv run earth --help` lists the
-subcommands (`build`, `login`, `render`, `gpu-check`).
+subcommands.
 
 ## Generating a project: `earth build`
 
