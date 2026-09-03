@@ -70,7 +70,7 @@ the native folder picker it needs never appears in headless Chromium.
 ## Serving single frames: `earth serve`
 
 For "what does it look like from here, facing that way" — one frame at a
-time, fast — rather than a full flyover:
+time — rather than a full flyover:
 
 ```
 uv run earth serve
@@ -88,15 +88,22 @@ request the way `earth render` does. `GET /frame` takes `lat`/`lon`/`alt`
 (camera position; `alt` in meters above sea level), `heading` (compass
 bearing, default `0`) and `tilt` (degrees from straight down, default `45`),
 optionally `width`/`height`, and responds with the rendered frame as
-`image/jpeg` — a few seconds per request once the server has warmed up,
-against the tens of seconds a one-off `earth render` needs to launch a
-browser and log in. `GET /health` reports readiness. The server keeps no
-frames on disk between requests — nothing is written to `out/` or anywhere
-else in the repo — and, since there's no auth on this endpoint and it drives
-a logged-in Google session, it binds `127.0.0.1` by default (`--host` to
-change that). See `uv run earth serve --help` for the full option list, and
-*Running with Docker* below for reaching it from the host when running in a
-container.
+`image/jpeg` — around a minute, nearly all of it fixed cost in Earth Studio's
+own UI rather than in drawing the frame. `GET /health` reports readiness. The
+server keeps no frames on disk between requests — nothing is written to `out/`
+or anywhere else in the repo — and, since there's no auth on this endpoint and
+it drives a logged-in Google session, it binds `127.0.0.1` by default
+(`--host` to change that). See `uv run earth serve --help` for the full
+option list, and *Running with Docker* below for reaching it from the host
+when running in a container.
+
+> **Known limitation: one frame per server run.** The second `GET /frame`
+> fails with a 30s timeout looking for Earth Studio's import control. Importing
+> a project needs the project browser, and once a render has happened the app
+> is in the editor, which has no import control and no route back to the
+> browser — reloading restores the editor, not the project browser. So the warm
+> page this command is built around currently only pays off for the first
+> request. Restart `earth serve` between frames until this is fixed.
 
 ### Running with Docker
 
@@ -163,7 +170,13 @@ this.
 ## GPU acceleration
 
 Chromium renders Earth Studio's WebGL canvas on the GPU when one is available
-and in software (SwiftShader) otherwise — software is several times slower.
+and in software (SwiftShader) otherwise. Measured on a Tesla V100 at
+1920×1080, software costs about 1.2× end-to-end (95s vs 77s for ten frames) —
+the frames themselves render 1.4× slower, and its first frame takes 13.1s
+against the GPU's 4.4s, but a large share of any short render is fixed
+browser and UI overhead that the GPU does nothing for. The gap matters for
+long flyovers, not for a handful of frames.
+
 `launch_context()` passes `--use-gl=angle --use-angle=vulkan
 --ignore-gpu-blocklist`; on the render host that Vulkan path is the only combo
 that engages the GPU (plain Chromium picks SwiftShader, `--use-angle=gl` lands
