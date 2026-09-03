@@ -20,6 +20,4 @@ build-backend = "hatchling.build"
 dev = ["ruff>=0.16.5"]
 
 [tool.ruff]
-# Matches the width the code was already written to; the default 88 would split
-# the geodesy math in esp_builder.py mid-expression.
 line-length = 100
