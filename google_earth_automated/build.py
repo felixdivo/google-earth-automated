@@ -22,8 +22,19 @@ EARTH_RADIUS_M = 6371000.0
 
 LON_RANGE = (-180.0, 180.0)
 LAT_RANGE = (-90.0, 90.0)
-ALT_RANGE = (-500.0, 65117481.0)
 TILT_RANGE = (0.0, 180.0)
+
+# Altitudes are written as a plain fraction of Earth Studio's full-scale
+# altitude, with no minValueRange/maxValueRange alongside them. The .esp field
+# is a fraction whether we like it or not -- writing metres into it gets the
+# value clamped (145 m came back as 65117 m) -- but nothing else about it needs
+# to be relative, and the range keys this used to emit were actively harmful:
+# Earth Studio applies minValueRange to latitude and longitude but *ignores* it
+# for altitude, so the old (-500, ...) range silently lifted every camera by
+# 500 m. Measured by importing built projects and reading the editor back: 145 m
+# arrived as 645 m, 5000 m as 5500 m. With a bare fraction they arrive as asked,
+# to within the ~1 m the app rounds off.
+ALTITUDE_SPAN_M = 65117481.0
 
 
 def bearing_between(lat1, lon1, lat2, lon2):
@@ -64,6 +75,11 @@ def destination_point(lat, lon, bearing_deg, distance_m):
 def _relative(value, value_range):
     lo, hi = value_range
     return (value - lo) / (hi - lo)
+
+
+def _altitude(metres):
+    """Metres above sea level, as the .esp's fraction of full scale."""
+    return metres / ALTITUDE_SPAN_M
 
 
 def _unwrap_headings(headings):
@@ -197,6 +213,10 @@ def build_orbit_esp(
 
     target: {"lat": ..., "lon": ..., "alt_m": ...} - point the camera looks at.
     waypoints: ordered list of {"lat": ..., "lon": ..., "alt_m": ...} camera positions.
+
+    Every alt_m is meters above sea level, camera positions included -- no height
+    here is relative to anything, and Earth Studio clamps a camera that ends up
+    below the terrain.
     """
     legs = list(waypoints)
     if close_loop:
@@ -227,7 +247,7 @@ def build_orbit_esp(
         "attributes": [
             _keyframed_block("longitude", times, lons, LON_RANGE),
             _keyframed_block("latitude", times, lats, LAT_RANGE),
-            _keyframed_block("altitude", times, alts, ALT_RANGE, logarithmic=False),
+            _keyframed_block("altitude", times, [_altitude(a) for a in alts], logarithmic=False),
         ],
     }
 
@@ -240,7 +260,7 @@ def build_orbit_esp(
                 "attributes": [
                     _static_block("longitudePOI", target["lon"], LON_RANGE),
                     _static_block("latitudePOI", target["lat"], LAT_RANGE),
-                    _static_block("altitudePOI", target["alt_m"], ALT_RANGE, logarithmic=False),
+                    _static_block("altitudePOI", _altitude(target["alt_m"]), logarithmic=False),
                 ],
             },
             {"type": "influence", "value": {"relative": 1}},
@@ -292,8 +312,9 @@ def build_still_esp(
     """Build an .esp project dict for a single static frame: one camera pose, no keyframes,
     no target POI (heading/tilt are given directly instead of derived from facing a target).
 
-    lat/lon/alt_m: camera position. heading: compass bearing in degrees the camera faces.
-    tilt: degrees from straight down (0 = straight down, 90 = horizon).
+    lat/lon/alt_m: camera position, alt_m in meters above sea level. heading: compass
+    bearing in degrees the camera faces. tilt: degrees from straight down (0 = straight
+    down, 90 = horizon).
     """
     pan_range = _pan_range(heading)
 
@@ -302,7 +323,7 @@ def build_still_esp(
         "attributes": [
             _static_block("longitude", lon, LON_RANGE),
             _static_block("latitude", lat, LAT_RANGE),
-            _static_block("altitude", alt_m, ALT_RANGE, logarithmic=False),
+            _static_block("altitude", _altitude(alt_m), logarithmic=False),
         ],
     }
 
@@ -353,9 +374,16 @@ def command(
     radius: Annotated[
         float, typer.Option(help="Orbit radius around the target, in meters.")
     ] = 200.0,
-    camera_height: Annotated[
-        float, typer.Option(help="Camera height above the target's ground elevation, in meters.")
-    ] = 30.0,
+    camera_alt: Annotated[
+        float,
+        typer.Option(
+            help=(
+                "Camera altitude, in meters above sea level. Absolute, not relative to the "
+                "target: Earth Studio clamps a camera below the terrain, so this has to clear "
+                "the ground at the orbit radius, not just the target."
+            )
+        ),
+    ] = 300.0,
     waypoints: Annotated[
         int, typer.Option(help="Number of camera waypoints spaced evenly around the orbit.")
     ] = 3,
@@ -392,20 +420,27 @@ def command(
     for i in range(waypoints):
         bearing_deg = start_bearing + i * 360.0 / waypoints
         wp_lat, wp_lon = destination_point(target["lat"], target["lon"], bearing_deg, radius)
-        orbit.append({"lat": wp_lat, "lon": wp_lon, "alt_m": target["alt_m"] + camera_height})
+        orbit.append({"lat": wp_lat, "lon": wp_lon, "alt_m": camera_alt})
 
     console.rule("[bold cyan]earth build[/]")
     console.print(
         f"Orbiting [bold]({target['lat']:.5f}, {target['lon']:.5f})[/] "
-        f"at radius [bold]{radius:.0f}m[/], camera height [bold]{camera_height:.0f}m[/]."
+        f"at radius [bold]{radius:.0f}m[/], camera altitude [bold]{camera_alt:.0f}m[/] "
+        f"above sea level (target ground [bold]{ground_alt:.0f}m[/])."
     )
+    if camera_alt <= ground_alt:
+        console.print(
+            f"[bold yellow]Warning:[/] --camera-alt {camera_alt:.0f}m is at or below the "
+            f"target's ground elevation ({ground_alt:.0f}m); Earth Studio will clamp the "
+            "camera to the terrain."
+        )
 
     table = Table(title="Waypoints", show_lines=False)
     table.add_column("#", justify="right")
     table.add_column("Bearing", justify="right")
     table.add_column("Latitude", justify="right")
     table.add_column("Longitude", justify="right")
-    table.add_column("Altitude (m)", justify="right")
+    table.add_column("Altitude (m ASL)", justify="right")
     for i, w in enumerate(orbit):
         bearing_deg = start_bearing + i * 360.0 / waypoints
         table.add_row(

@@ -29,7 +29,7 @@ requests serialize behind the one worker regardless.
 Requires a logged-in session -- run `earth login` first.
 
     curl -o frame.jpg \\
-        'http://localhost:8000/frame?lat=50.1070&lon=8.6633&alt=145&heading=180&tilt=70'
+        'http://localhost:8000/frame?lat=50.1070&lon=8.6633&alt=650&heading=180&tilt=70'
 
 Binds 127.0.0.1 by default -- there's no auth on this API, so the default
 keeps it off the network entirely. Running through `./run.sh` (real Docker
@@ -99,6 +99,10 @@ def load_project(session: Session, *, width: int, height: int) -> None:
     """
     STAGING_DIR.mkdir(parents=True, exist_ok=True)
     esp_file = STAGING_DIR / f"{PROJECT_NAME}.esp"
+    # Null Island at 1000 m above sea level: open ocean, so the pose is well
+    # clear of terrain wherever Earth Studio decides the ground is, and no
+    # imagery has to stream in to draw it. The first request overwrites all five
+    # values anyway -- this only has to be somewhere harmless to start from.
     esp = build_still_esp(
         0.0, 0.0, 1000.0, heading=0.0, tilt=45.0, name=PROJECT_NAME, width=width, height=height
     )

@@ -28,10 +28,15 @@ facing the target.
 
 ```
 uv run earth build --lat 50.1070 --lon 8.6633 --ground-alt 115 \
-    --radius 200 --camera-height 30 --name frankfurt_hauptbahnhof_orbit
+    --radius 200 --camera-alt 400 --name frankfurt_hauptbahnhof_orbit
 ```
 
 The `.esp` is written to `out/<name>.esp` by default (override with `-o`).
+
+Every altitude is meters above sea level — `--ground-alt` describes the target,
+`--camera-alt` places the camera, and neither is relative to the other. Earth
+Studio clamps a camera that ends up below the terrain, so `--camera-alt` has to
+clear the ground around the whole orbit, not just at the target.
 
 Run `uv run earth build --help` for all options (waypoint count, start
 bearing, leg duration, frame rate, resolution, open vs. closed loop, ...).
@@ -75,7 +80,7 @@ time — rather than a full flyover:
 ```
 uv run earth serve
 curl -o /tmp/f.jpg \
-    'http://localhost:8000/frame?lat=50.1070&lon=8.6633&alt=145&heading=180&tilt=70'
+    'http://localhost:8000/frame?lat=50.1070&lon=8.6633&alt=650&heading=180&tilt=70'
 ```
 
 That second line doubles as a smoke test: point it at a server you are
