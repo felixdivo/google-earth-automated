@@ -130,11 +130,30 @@ Each of these was measured and ruled out:
 Each worker gets a copy of the login profile with `Default/Cache` — 1.3 GB of
 map tiles for places already visited — skipped, so every worker starts cold.
 Given that tile fetching is the entire ceiling, *copying* that cache per worker
-is the remaining thing worth trying: it trades disk (and is nearly free on a
-copy-on-write filesystem, which the copy already asks for via `--reflink=auto`)
-for exactly the fetches that cap throughput. Sharing one cache directory
-between browsers is not an option — Chromium rewrites cache entries in place,
-so a shared directory or a hardlink farm corrupts.
+is the remaining thing worth trying: it trades disk for exactly the fetches
+that cap throughput, and would be nearly free on a copy-on-write filesystem
+(the copy is a plain `shutil.copytree` today, so that would mean asking for a
+reflink again — `os.copy_file_range()`, or `cp --reflink=auto`). Sharing one
+cache directory between browsers is not an option — Chromium rewrites cache
+entries in place, so a shared directory or a hardlink farm corrupts.
+
+## Waiting for an imported project
+
+Importing a project re-renders the whole scene, and Earth Studio fires no event
+when it is done. `wait_for_project_loaded()` watches for the project's own name
+to appear instead of sleeping a fixed 8 s, then waits `SCENE_SETTLE_MS` on top
+because the name lands well before the imagery has resolved.
+
+That settle is not optional: at 1500 ms the rendered frames differed from the
+blind-8 s baseline by 3.2–8.0 % of pixels, against a 0.05–0.11 % run-to-run
+noise floor — i.e. really rendering less detail. At 6000 ms it is back inside
+the floor. So the whole wait lands near 6.7 s against the 8 s it replaced: the
+optimization is worth about **1.3 s**, not the ~6 s a short settle would
+suggest. It is kept because that second and a bit is paid on every `earth
+render` and on every `earth serve` worker's startup, and because a scene that
+settles quickly is no longer charged the full 8 s.
+
+Re-tune it by comparing pixels, never by eye.
 
 ## GPU versus software rendering
 

@@ -38,8 +38,8 @@ Every altitude is meters above sea level — `--ground-alt` describes the target
 Studio clamps a camera that ends up below the terrain, so `--camera-alt` has to
 clear the ground around the whole orbit, not just at the target.
 
-Run `uv run earth build --help` for all options (waypoint count, start
-bearing, leg duration, frame rate, resolution, open vs. closed loop, ...).
+Run `uv run earth build --help` for all options (waypoint count, leg
+duration, frame rate, resolution, ...).
 
 ## Rendering a project to an image sequence
 
@@ -68,9 +68,8 @@ the only local, non-Cloud format Earth Studio offers), and renders the frames
 directly into `out/frankfurt_hauptbahnhof_orbit/` by default (Earth Studio
 nests frames under a project-name subfolder of `--output-dir` on its own).
 Turning that sequence into a video is a separate, later step, not covered
-here. Add `--dry-run` to validate the `.esp` file and see the planned steps
-without opening a browser. The render runs headed (on the virtual display) —
-the native folder picker it needs never appears in headless Chromium.
+here. The render always runs headed, on the virtual display: the native
+folder picker it needs never appears in headless Chromium.
 
 ## Serving single frames: `earth serve`
 
@@ -87,102 +86,61 @@ That second line doubles as a smoke test: point it at a server you are
 debugging and it either leaves a viewable JPEG at `/tmp/f.jpg` or prints the
 error the API returned.
 
-`earth serve` starts a small HTTP API and keeps logged-in Earth Studio
-pages open for as long as it runs, instead of launching a fresh browser per
-request the way `earth render` does. `GET /frame` takes `lat`/`lon`/`alt`
-(camera position; `alt` in meters above sea level), `heading` (compass
-bearing, default `0`) and `tilt` (degrees from straight down, default `45`),
-and responds with the frame as `image/jpeg`, most of the time spent on Earth
-Studio drawing. `GET /health` reports how many workers are ready.
+`earth serve` keeps logged-in Earth Studio pages open for as long as it runs,
+instead of launching a fresh browser per request the way `earth render` does.
+`GET /frame` takes `lat`/`lon`/`alt` (camera position; `alt` in meters above
+sea level), `heading` (compass bearing, default `0`) and `tilt` (degrees from
+straight down, default `45`), and responds with the frame as `image/jpeg`;
+`GET /health` answers `ok`. Frames are 1920x1080 — fixed for the life of the
+server, because it is the one property of a frame that cannot be changed
+without importing a new project.
 
-Frame size is set once per server with `--width`/`--height` rather than per
-request: it is the one property of a frame that cannot be changed without
-importing a new project, which would cost more than the option is worth.
+Three things make it quick:
 
-The server keeps no frames on disk — nothing is written to `out/` or anywhere
-else in the repo — and, since there's no auth on this endpoint and it drives a
-logged-in Google session, it binds `127.0.0.1` by default (`--host` to change
-that). See `uv run earth serve --help` for the full option list, and *Running
-with Docker* below for reaching it from the host when running in a container.
-
-Three things make it quick. Two avoid re-doing per request what Earth Studio
-only needs done once:
-
-- **The project is imported once, at startup.** A request types its camera
-  pose straight into the editor's camera fields (Latitude, Longitude,
-  Altitude, Pan, Tilt) on the project already open, so it pays neither the
-  import nor the whole-scene rebuild an import triggers.
+- **The project is imported once per worker, at startup.** A request types its
+  camera pose straight into the editor's camera fields on the project already
+  open, so it pays neither the import nor the whole-scene rebuild an import
+  triggers.
 - **Frames are captured with Earth Studio's own snapshot button**, not the
-  Render panel. It produces the same image at the project's resolution in half
-  the time, usually byte-identical, and it arrives
-  as an ordinary browser download — so `earth serve` needs no output folder,
-  and none of the native File System Access dialogs described under *Technical
-  details*. `earth render` still uses the Render panel, because a snapshot is
-  one frame and an animation is not.
-
-And the third answers several requests at a time:
-
-- **`--workers N` runs a fleet.** One browser answering one request at a time
-  leaves the machine idle. N worker processes, each with its own browser and
-  its own copy of the loaded project, sit behind one
-  dispatcher on the public port: `GET /frame` goes to a free worker, and a
-  request that finds none waits — the queue is the backpressure, so a client
-  can fire as many requests as it likes without picking a worker itself.
-  `GET /health` reports `ok - <ready>/<N> workers ready`, and a worker whose
-  browser dies is rebuilt in the background while the rest keep serving.
+  Render panel: the same image at the project's resolution in half the time,
+  usually byte-identical, arriving as an ordinary browser download. So
+  `earth serve` needs no output folder and none of the native dialogs
+  `earth render` has to drive — which is also why it runs headless.
+- **`--workers N` runs a fleet.** N worker processes, each with its own browser
+  and its own copy of the loaded project, sit behind one socket that
+  [gunicorn](https://gunicorn.org/) load-balances across. A worker that dies is
+  replaced; one that wedges past the frame timeout is killed and replaced.
 
 How far that scales, and what stops it, is measured in
 [docs/performance.md](docs/performance.md): parallelism is linear to 4 workers
 and then flat, because the ceiling is Google's map-tile bandwidth rather than
-anything on the machine — no local resource is close to saturated. Poses that
-reuse tiles already streamed are not subject to that ceiling and keep scaling
-well past 4. So pick `--workers` by what you are rendering: 4 is the honest
-number for arbitrary poses, while a workload that revisits the same area — a
-flyover, or many headings from one point — goes much higher.
+anything on the machine. Poses that reuse tiles already streamed are not
+subject to that ceiling and keep scaling well past 4. So pick `--workers` by
+what you are rendering: 4 is the honest number for arbitrary poses, while a
+workload that revisits the same area — a flyover, or many headings from one
+point — goes much higher. Budget roughly 2.5GB of RAM per worker.
 
-Each worker is a separate process rather than a tab, because one Chromium may
-hold a profile at a time: every worker gets its own throwaway copy of
-`.auth/chrome-profile/` in a temp dir (~90MB each — `Default/Cache`,
-1.3GB of map tiles for places already visited, is skipped, and there is no way
-to *share* a cache between browsers: Chromium rewrites its cache entries in
-place, so a shared directory or a hardlink farm corrupts). The copies are
-deleted when the server stops, and `earth login` still writes only the real
-profile. Skipping that cache means every worker starts cold, which given the
-tile ceiling is the one lever left worth pulling: *copying* it per worker
-(1.3GB each, free on a CoW filesystem — the copy already asks for
-`--reflink=auto`) would trade disk for exactly the tile fetches that cap
-throughput.
-
-Copies work because they carry the same logged-in Google session, and that was
-measured rather than assumed: at up to 8 concurrent workers, no worker was ever
-bounced to a sign-in page, and the master profile's cookies came back
-byte-identical and still valid after every run — each copy rotates its own
-session cookies without invalidating the original. Google does not serialize an
-account, and local snapshot rendering is client-side WebGL, so extra workers add
-map-tile traffic rather than server-side render quota. What to watch for as N
-grows is a re-auth challenge (fix: `earth login` again); slower tiles you will
-find first, and that is the throughput ceiling described in
-[docs/performance.md](docs/performance.md) rather than a sign of anything wrong.
+Each worker is a process rather than a tab because one Chromium may hold a
+profile at a time, so each gets a throwaway copy of `.auth/chrome-profile/`
+(~90MB; the 1.3GB tile cache is skipped), deleted when the server stops —
+`earth login` still writes only the real profile. The copies share one Google
+session, which was measured rather than assumed: up to 8 concurrent workers,
+none was ever bounced to a sign-in page and the master profile's cookies stayed
+valid. What to watch for as N grows is a re-auth challenge; the fix is `earth
+login` again.
 
 One fleet spreads over every GPU the container was given, so a second container
 is not the unit of scaling. Chromium's Vulkan backend has no flag for picking a
-GPU — it takes the first device the driver enumerates, which would put every
-worker on the same card — but NVIDIA's userspace enumerates from the
-`/dev/nvidiaN` device nodes, and a mount namespace makes those a per-process
-matter. Each worker is therefore started under `unshare --mount` with
-`/dev/null` bound over the nodes it should not use, and sees exactly one GPU;
-the binds are private, so they are invisible to the rest of the container and
-vanish with the worker. Workers are assigned round-robin by index, so a
-restarted one comes back to the same card.
+GPU, but NVIDIA's userspace enumerates from the `/dev/nvidiaN` device nodes — so
+each worker unshares its own mount namespace and binds `/dev/null` over the
+nodes it should not use, leaving it exactly one card. Assignment is round-robin,
+so a restarted worker returns to the same one. There is nothing to configure:
+`GPUS=14,15 ./run.sh …` decides which GPUs exist and the fleet uses what it
+finds; with one GPU, fewer than two workers, or no `CAP_SYS_ADMIN`, it says so
+and leaves them unpinned. More GPUs will not raise throughput for arbitrary
+poses — the ceiling there is tile bandwidth, not the GPU.
 
-There is nothing to configure: `GPUS=14,15 ./run.sh …` decides which GPUs exist,
-and the fleet uses what it finds. With one GPU, fewer than two workers, or no
-`CAP_SYS_ADMIN` to unshare with, it says so and falls back to leaving the
-workers unpinned. More GPUs will not raise throughput for arbitrary poses,
-because the ceiling there is tile bandwidth rather than the GPU; what a large
-fleet does want is RAM, at roughly 2.5GB per worker.
-
-### Running with Docker
+## Running with Docker
 
 `./run.sh` builds the image (`Dockerfile`) and runs a command in it with the
 repo bind-mounted, noVNC on port 6080, the `earth serve` API on port 8000,
@@ -212,37 +170,32 @@ With no GPU it falls back to software rendering. This does not need VS Code or
 the devcontainer CLI; the devcontainer (which builds the same `Dockerfile` and
 passes the same GPU devices) remains for that workflow.
 
-### Technical details
+## Technical details
 
-Two things make this harder than a normal Playwright script:
+Four things make this harder than a normal Playwright script, each explained
+where it is dealt with rather than here:
 
-- **Earth Studio grants the output folder through the browser's File System
-  Access API**, which Chromium serves as a *native OS dialog* — outside
-  Playwright's control entirely. `render.py` drives it with `xdotool`
-  instead (see `select_output_folder()`), which depends on the
-  D-Bus/portal/window-manager stack `docker/services.sh` brings up and on the
-  `/dev/fuse` + `CAP_SYS_ADMIN` grant described in Security below. Two more
-  native prompts follow — "Allow this site to view and copy files?" and "Save
-  changes to `<folder>`?" — which `start_render()` accepts from the keyboard
-  (Tab to the grant button, Enter). A managed-policy file used to pre-grant
-  these, but Playwright's bundled Chrome for Testing ignores enterprise
-  policy, so the prompts really do appear; the grant then persists in the
-  profile for later runs.
-- **Earth Studio's UI is an undocumented, JS-heavy SPA**, so
-  `render.py`'s selectors are best-effort and may need adjusting after
-  a live run — they live in `google_earth_automated/browser.py`
-  and the selector block at the top of
-  `google_earth_automated/render.py`.
-- **The import control only exists in the project browser.** Once a project is
-  open the app is in the editor, which has no import control and no route back
-  — so a page can be imported into once and must then be re-used in place.
-  That is why `earth serve` moves the camera of one loaded project instead of
-  importing a project per request.
-- **Camera values are not `<input>` elements.** Each one is a `.scrub-input`
-  widget showing a rounded value, which swaps in a contenteditable only once
-  clicked — hence click, select-all, type, and read the value back to confirm
-  it landed (`set_camera_pose()`). A write that silently misses would render a
-  plausible frame of the wrong place, which nothing downstream could detect.
+- **The output folder is granted through a *native OS dialog*** (the File
+  System Access API), outside Playwright's control — `render.py` drives it and
+  the two permission prompts after it with `xdotool`, which is what the
+  D-Bus/portal/window-manager stack and the `/dev/fuse` + `CAP_SYS_ADMIN` grant
+  under [Security](#security) are for. `earth serve` avoids all of this by
+  capturing with the snapshot button instead.
+- **Earth Studio's UI is an undocumented, JS-heavy SPA**, so the selectors are
+  best-effort and may need adjusting after a live run. They live in one block
+  at the top of `google_earth_automated/render.py`.
+- **A page can be imported into once**, because the import control exists only
+  in the project browser and the editor has no route back — which is why
+  `earth serve` re-poses one loaded project rather than importing per request.
+- **Camera values are not `<input>` elements** but `.scrub-input` widgets, so
+  they are clicked, typed into, and read back to confirm the value landed. A
+  write that silently missed would render a plausible frame of the wrong place.
+
+`render.py`'s module docstring and the comments around `select_output_folder()`
+and `set_camera_pose()` carry the full reasoning, including the approaches that
+did not work. Ideas considered and deliberately not built — chiefly retiring
+that native-dialog path altogether — are in
+[docs/future_ideas.md](docs/future_ideas.md).
 
 Chromium's runtime shared libs and fonts come from Playwright's own
 `--with-deps` list; the `Dockerfile` adds the display/VNC/portal stack and the
@@ -271,7 +224,7 @@ on Mesa llvmpipe — both CPU).
 - **Linux host with an NVIDIA GPU** — `./run.sh` and the devcontainer both
   pass the GPU in via CDI (`--device=nvidia.com/gpu=…`); nothing else to
   configure. Pass several and `earth serve --workers N` spreads its fleet
-  across them (see *Serving frames over HTTP*).
+  across them (see *Serving single frames*).
 - **Windows (Docker Desktop, WSL2 backend)** — untested here; would need
   WSL2's `/dev/dxg` + `/usr/lib/wsl/lib` bind-mounted into the container and
   the ANGLE backend switched to `d3d12`.
@@ -308,11 +261,13 @@ automation work. Worth knowing before you run it:
 
 - **Runs as root** (`containerUser: root`) — a compromise of anything in the
   container gets root within it, not just an unprivileged user.
-- **`/dev/fuse` + `CAP_SYS_ADMIN`** (`runArgs` in `devcontainer.json`) — needed
-  so the native output-folder picker can confirm via `xdg-desktop-portal`'s
-  FUSE-backed Documents portal; `CAP_SYS_ADMIN` is the single capability most
-  associated with real container-escape exploits, though it stays scoped to
-  Docker Desktop's own VM, not your host OS directly.
+- **`/dev/fuse` + `CAP_SYS_ADMIN`** (`runArgs` in `devcontainer.json`, and the
+  same flags in `run.sh`) — needed twice over: so the native output-folder
+  picker can confirm via `xdg-desktop-portal`'s FUSE-backed Documents portal,
+  and so `earth serve --workers N` can unshare a mount namespace per worker to
+  pin it to one GPU. `CAP_SYS_ADMIN` is the single capability most associated
+  with real container-escape exploits. Dropping it costs the GPU spread (the
+  fleet says so and runs unpinned) and `earth render` entirely.
 - **Chromium's automation-detection flags are stripped**
   (`--disable-blink-features=AutomationControlled`, `--enable-automation`
   removed) — this is what gets past Google's bot-detection at login, but it
