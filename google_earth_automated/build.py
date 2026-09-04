@@ -15,8 +15,6 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.console import Console
-from rich.table import Table
 
 EARTH_RADIUS_M = 6371000.0
 
@@ -99,37 +97,27 @@ def _tilt_for(cam, target):
     return min(180.0, max(0.0, 90.0 - elevation_angle_deg))
 
 
-def _keyframed_block(attr_type, times, values, value_range=None, logarithmic=None):
-    value = {"relative": values[0] if not value_range else _relative(values[0], value_range)}
-    if value_range is not None:
-        value["minValueRange"], value["maxValueRange"] = value_range
-    if logarithmic is not None:
-        value["logarithmic"] = logarithmic
-
-    keyframes = [
-        {
-            "time": t,
-            "value": v if not value_range else _relative(v, value_range),
-        }
-        for t, v in zip(times, values)
-    ]
-
-    return {
-        "type": attr_type,
-        "value": value,
-        "keyframes": keyframes,
-        "inTimeline": True,
-    }
-
-
-def _static_block(attr_type, value, value_range=None, logarithmic=None):
-    """A camera attribute that holds one value for the whole scene (no keyframes)."""
-    block_value = {"relative": value if not value_range else _relative(value, value_range)}
+def _block(attr_type, value, value_range=None, times=None, values=None, altitude=False):
+    """A camera attribute, either static (one `value` for the whole scene) or
+    keyframed (animated through `values` at `times`, with `value` as the initial
+    pose). `altitude` marks the altitude/altitudePOI blocks, which -- unlike every
+    other attribute type -- always carry an explicit `logarithmic: False`, even
+    though it is never anything else (see ALTITUDE_SPAN_M above for why altitude
+    is handled specially at all)."""
+    block_value = {"relative": value if value_range is None else _relative(value, value_range)}
     if value_range is not None:
         block_value["minValueRange"], block_value["maxValueRange"] = value_range
-    if logarithmic is not None:
-        block_value["logarithmic"] = logarithmic
-    return {"type": attr_type, "value": block_value}
+    if altitude:
+        block_value["logarithmic"] = False
+
+    block = {"type": attr_type, "value": block_value}
+    if times is not None:
+        block["keyframes"] = [
+            {"time": t, "value": v if value_range is None else _relative(v, value_range)}
+            for t, v in zip(times, values)
+        ]
+        block["inTimeline"] = True
+    return block
 
 
 def _camera_lens_group():
@@ -198,6 +186,24 @@ def _pan_range(heading):
     return (heading - 0.5, heading + 0.5)
 
 
+def _scene(*, duration_frames, camera_group_attrs, camera_group_in_timeline):
+    """The scene-dict skeleton shared by orbit and still projects: a single
+    cameraGroup (position/rotation/target-effect attributes as given, plus the
+    always-empty lens group) and the environment group, wrapped with the
+    animationModel/cameraExport boilerplate Earth Studio expects on every scene."""
+    camera_group = {"type": "cameraGroup"}
+    if camera_group_in_timeline:
+        camera_group["inTimeline"] = True
+    camera_group["attributes"] = [*camera_group_attrs, _camera_lens_group()]
+
+    return {
+        "animationModel": {"roving": False, "logarithmic": False, "groupedPosition": True},
+        "duration": duration_frames,
+        "attributes": [camera_group, _environment_group()],
+        "cameraExport": {"logarithmic": False, "modelVersion": 2},
+    }
+
+
 def build_orbit_esp(
     target,
     waypoints,
@@ -240,14 +246,15 @@ def build_orbit_esp(
     )
 
     duration_frames = round((n - 1) * seconds_per_leg * frame_rate)
+    alts_frac = [_altitude(a) for a in alts]
 
     camera_position_group = {
         "type": "cameraPositionGroup",
         "inTimeline": True,
         "attributes": [
-            _keyframed_block("longitude", times, lons, LON_RANGE),
-            _keyframed_block("latitude", times, lats, LAT_RANGE),
-            _keyframed_block("altitude", times, [_altitude(a) for a in alts], logarithmic=False),
+            _block("longitude", lons[0], LON_RANGE, times=times, values=lons),
+            _block("latitude", lats[0], LAT_RANGE, times=times, values=lats),
+            _block("altitude", alts_frac[0], times=times, values=alts_frac, altitude=True),
         ],
     }
 
@@ -258,9 +265,9 @@ def build_orbit_esp(
             {
                 "type": "poi",
                 "attributes": [
-                    _static_block("longitudePOI", target["lon"], LON_RANGE),
-                    _static_block("latitudePOI", target["lat"], LAT_RANGE),
-                    _static_block("altitudePOI", _altitude(target["alt_m"]), logarithmic=False),
+                    _block("longitudePOI", target["lon"], LON_RANGE),
+                    _block("latitudePOI", target["lat"], LAT_RANGE),
+                    _block("altitudePOI", _altitude(target["alt_m"]), altitude=True),
                 ],
             },
             {"type": "influence", "value": {"relative": 1}},
@@ -271,30 +278,21 @@ def build_orbit_esp(
         "type": "cameraRotationGroup",
         "inTimeline": True,
         "attributes": [
-            _keyframed_block("rotationX", times, headings, pan_range),
-            _keyframed_block("rotationY", times, tilts, TILT_RANGE),
+            _block("rotationX", headings[0], pan_range, times=times, values=headings),
+            _block("rotationY", tilts[0], TILT_RANGE, times=times, values=tilts),
             {"type": "rotationZ", "value": {"relative": 0}},
         ],
     }
 
-    scene = {
-        "animationModel": {"roving": False, "logarithmic": False, "groupedPosition": True},
-        "duration": duration_frames,
-        "attributes": [
-            {
-                "type": "cameraGroup",
-                "inTimeline": True,
-                "attributes": [
-                    camera_position_group,
-                    camera_target_effect,
-                    camera_rotation_group,
-                    _camera_lens_group(),
-                ],
-            },
-            _environment_group(),
+    scene = _scene(
+        duration_frames=duration_frames,
+        camera_group_attrs=[
+            camera_position_group,
+            camera_target_effect,
+            camera_rotation_group,
         ],
-        "cameraExport": {"logarithmic": False, "modelVersion": 2},
-    }
+        camera_group_in_timeline=True,
+    )
 
     return _esp(
         scene,
@@ -321,37 +319,26 @@ def build_still_esp(
     camera_position_group = {
         "type": "cameraPositionGroup",
         "attributes": [
-            _static_block("longitude", lon, LON_RANGE),
-            _static_block("latitude", lat, LAT_RANGE),
-            _static_block("altitude", _altitude(alt_m), logarithmic=False),
+            _block("longitude", lon, LON_RANGE),
+            _block("latitude", lat, LAT_RANGE),
+            _block("altitude", _altitude(alt_m), altitude=True),
         ],
     }
 
     camera_rotation_group = {
         "type": "cameraRotationGroup",
         "attributes": [
-            _static_block("rotationX", heading, pan_range),
-            _static_block("rotationY", tilt, TILT_RANGE),
+            _block("rotationX", heading, pan_range),
+            _block("rotationY", tilt, TILT_RANGE),
             {"type": "rotationZ", "value": {"relative": 0}},
         ],
     }
 
-    scene = {
-        "animationModel": {"roving": False, "logarithmic": False, "groupedPosition": True},
-        "duration": 0,
-        "attributes": [
-            {
-                "type": "cameraGroup",
-                "attributes": [
-                    camera_position_group,
-                    camera_rotation_group,
-                    _camera_lens_group(),
-                ],
-            },
-            _environment_group(),
-        ],
-        "cameraExport": {"logarithmic": False, "modelVersion": 2},
-    }
+    scene = _scene(
+        duration_frames=0,
+        camera_group_attrs=[camera_position_group, camera_rotation_group],
+        camera_group_in_timeline=False,
+    )
 
     return _esp(
         scene, name=name, frame_rate=frame_rate, width=width, height=height, duration_frames=0
@@ -385,17 +372,12 @@ def command(
         ),
     ] = 300.0,
     waypoints: Annotated[
-        int, typer.Option(help="Number of camera waypoints spaced evenly around the orbit.")
+        int,
+        typer.Option(min=2, help="Number of camera waypoints spaced evenly around the orbit."),
     ] = 3,
-    start_bearing: Annotated[
-        float, typer.Option(help="Compass bearing of the first waypoint, in degrees.")
-    ] = 0.0,
     seconds_per_leg: Annotated[
         float, typer.Option(help="Flight time between consecutive waypoints, in seconds.")
     ] = 5.0,
-    open_loop: Annotated[
-        bool, typer.Option(help="Don't fly back to the first waypoint at the end.")
-    ] = False,
     frame_rate: Annotated[int, typer.Option(help="Project frame rate.")] = 30,
     width: Annotated[int, typer.Option(help="Video width in pixels.")] = 1920,
     height: Annotated[int, typer.Option(help="Video height in pixels.")] = 1080,
@@ -406,51 +388,34 @@ def command(
     ] = None,
 ) -> None:
     """Generate a Google Earth Studio .esp project that orbits a point of interest."""
-    console = Console()
-
-    if waypoints < 2:
-        console.print("[bold red]Error:[/] --waypoints must be at least 2.")
-        raise typer.Exit(1)
-
     output_path = output or Path(f"out/{name}.esp")
 
     target = {"lat": lat, "lon": lon, "alt_m": ground_alt}
 
+    bearings = [i * 360.0 / waypoints for i in range(waypoints)]
     orbit = []
-    for i in range(waypoints):
-        bearing_deg = start_bearing + i * 360.0 / waypoints
+    for bearing_deg in bearings:
         wp_lat, wp_lon = destination_point(target["lat"], target["lon"], bearing_deg, radius)
         orbit.append({"lat": wp_lat, "lon": wp_lon, "alt_m": camera_alt})
 
-    console.rule("[bold cyan]earth build[/]")
-    console.print(
-        f"Orbiting [bold]({target['lat']:.5f}, {target['lon']:.5f})[/] "
-        f"at radius [bold]{radius:.0f}m[/], camera altitude [bold]{camera_alt:.0f}m[/] "
-        f"above sea level (target ground [bold]{ground_alt:.0f}m[/])."
+    print("earth build")
+    print(
+        f"Orbiting ({target['lat']:.5f}, {target['lon']:.5f}) "
+        f"at radius {radius:.0f}m, camera altitude {camera_alt:.0f}m "
+        f"above sea level (target ground {ground_alt:.0f}m)."
     )
     if camera_alt <= ground_alt:
-        console.print(
-            f"[bold yellow]Warning:[/] --camera-alt {camera_alt:.0f}m is at or below the "
+        print(
+            f"Warning: --camera-alt {camera_alt:.0f}m is at or below the "
             f"target's ground elevation ({ground_alt:.0f}m); Earth Studio will clamp the "
             "camera to the terrain."
         )
 
-    table = Table(title="Waypoints", show_lines=False)
-    table.add_column("#", justify="right")
-    table.add_column("Bearing", justify="right")
-    table.add_column("Latitude", justify="right")
-    table.add_column("Longitude", justify="right")
-    table.add_column("Altitude (m ASL)", justify="right")
-    for i, w in enumerate(orbit):
-        bearing_deg = start_bearing + i * 360.0 / waypoints
-        table.add_row(
-            str(i + 1),
-            f"{bearing_deg:.1f}°",
-            f"{w['lat']:.5f}",
-            f"{w['lon']:.5f}",
-            f"{w['alt_m']:.0f}",
+    print(f"\n{'#':>3} {'Bearing':>8} {'Latitude':>10} {'Longitude':>11} {'Altitude (m ASL)':>17}")
+    for i, (bearing_deg, w) in enumerate(zip(bearings, orbit), start=1):
+        print(
+            f"{i:>3} {bearing_deg:>7.1f}° {w['lat']:>10.5f} {w['lon']:>11.5f} {w['alt_m']:>17.0f}"
         )
-    console.print(table)
 
     esp = build_orbit_esp(
         target=target,
@@ -460,12 +425,8 @@ def command(
         width=width,
         height=height,
         seconds_per_leg=seconds_per_leg,
-        close_loop=not open_loop,
     )
     write_esp(esp, output_path)
 
     duration_s = esp["settings"]["duration"] / frame_rate
-    console.print(
-        f"\n[bold green]✓[/] Wrote [bold]{output_path}[/] "
-        f"({duration_s:.1f}s @ {frame_rate}fps, {width}x{height})"
-    )
+    print(f"\nWrote {output_path} ({duration_s:.1f}s @ {frame_rate}fps, {width}x{height})")
