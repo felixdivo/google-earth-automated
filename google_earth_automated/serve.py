@@ -16,13 +16,25 @@ are captured with Earth Studio's own snapshot button rather than through the
 render panel: same resolution (the project's, not the viewport's), half the
 time, and no output folder -- which means no File System Access grant and none
 of the native-dialog machinery `earth render` needs. And requests run N at a
-time instead of one, because a frame is mostly Earth Studio drawing on the GPU
-and one browser leaves the machine idle. Measured on this host at 1920x1080,
-three frames per worker: 0.10 frames/s at --workers 1 (median 4.6s per frame),
-0.18 at 2, 0.31 at 4, 0.44 at 8 (median 9.5s, GPU pegged at ~85%). Past 4 the
-extra throughput is bought with latency.
+time instead of one, because one browser leaves the machine idle. Measured on
+this host at 1920x1080 over poses far enough apart to share no map tiles: 0.15
+frames/s at --workers 1 (median 6.3s per frame), 0.30 at 2, 0.64 at 4, 0.83 at
+8 (median 8.3s), 0.89 at 16 (median 12.8s).
 
-Which is why the fleet spreads itself over every GPU the container was given,
+So scaling is linear to 4 workers and then stops, and what stops it is Google's
+map tiles rather than this machine. The fleet's aggregate tile download sits at
+7-8 MB/s from 4 workers on and does not rise with more -- on a link that pulls
+78 MB/s from Google in a single stream -- while the frame itself waits: the
+snapshot blocks until the scene resolves. Re-rendering one pose the workers
+have already streamed, so that the tiles are in memory, scales the way the
+hardware would suggest: 0.36 frames/s at 1 worker (median 2.7s), 2.66 at 8
+(2.9s), 4.43 at 16 (3.5s) -- 12x, with latency almost flat. Nothing local is
+close to full: at 16 workers the fleet uses ~30 of 96 cores and ~20% of each
+GPU, and running headless (no X server at all) does not help. How much a pose
+costs therefore depends on how much of it has to be fetched -- measured frames
+pulled 9-14 MB each, and a pose a worker has already seen pulls nothing.
+
+The fleet still spreads itself over every GPU the container was given,
 round-robin. Chromium's Vulkan backend has no flag for choosing one, so each
 worker is launched in a mount namespace that hides the other GPUs' device nodes
 -- see _pin_to_gpu. Nothing to configure: `GPUS=14,15 ./run.sh` decides what
@@ -714,8 +726,8 @@ def command(
             min=1,
             help=(
                 "How many browsers to answer requests with, each on its own copy of the "
-                "login profile. Throughput scales to about 4x at 8 workers on one GPU, "
-                "with per-frame latency roughly doubling -- see serve.py's docstring."
+                "login profile. Scales linearly to about 4; past that Google's map-tile "
+                "streaming, not this machine, is the limit -- see serve.py's docstring."
             ),
         ),
     ] = 1,

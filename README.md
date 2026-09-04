@@ -123,8 +123,8 @@ only needs done once:
 
 And the third answers several requests at a time:
 
-- **`--workers N` runs a fleet.** A frame is mostly Earth Studio drawing on the
-  GPU, so one browser leaves the machine idle. N worker processes, each with
+- **`--workers N` runs a fleet.** One browser answering one request at a time
+  leaves the machine idle. N worker processes, each with
   its own browser and its own copy of the loaded project, sit behind one
   dispatcher on the public port: `GET /frame` goes to a free worker, and a
   request that finds none waits — the queue is the backpressure, so a client
@@ -132,19 +132,38 @@ And the third answers several requests at a time:
   `GET /health` reports `ok - <ready>/<N> workers ready`, and a worker whose
   browser dies is rebuilt in the background while the rest keep serving.
 
-Measured on one V100 at 1920x1080, three frames per worker:
+Measured on two V100s at 1920x1080, over poses far enough apart to share no map
+tiles:
 
-| `--workers` | throughput | speedup | median frame |
-| ----------- | ---------- | ------- | ------------ |
-| 1           | 0.10 f/s   | 1.0×    | 4.6s         |
-| 2           | 0.18 f/s   | 1.8×    | 5.2s         |
-| 4           | 0.31 f/s   | 3.1×    | 6.0s         |
-| 8           | 0.44 f/s   | 4.3×    | 9.5s         |
+| `--workers` | throughput | speedup | median frame | tile download |
+| ----------- | ---------- | ------- | ------------ | ------------- |
+| 1           | 0.15 f/s   | 1.0×    | 6.3s         | 2.1 MB/s      |
+| 2           | 0.30 f/s   | 2.0×    | 6.5s         | 4.2 MB/s      |
+| 4           | 0.64 f/s   | 4.3×    | 6.4s         | 7.2 MB/s      |
+| 8           | 0.83 f/s   | 5.5×    | 8.3s         | 7.2 MB/s      |
+| 16          | 0.89 f/s   | 6.0×    | 12.8s        | 7.8 MB/s      |
 
-Scaling is GPU-bound, not memory-bound: at 8 workers the GPU sits at ~85% while
-the fleet uses ~20GB of RAM and ~5GB of VRAM. Past 4 workers the extra
-throughput is bought with latency, so 4 is the sweet spot on this hardware and
-8 the point where a frame takes twice as long as it would alone.
+Scaling is linear to 4 workers and then stops, and what stops it is **Google's
+map tiles, not this machine**. Look at the last column: the fleet's aggregate
+tile download flattens at 7-8 MB/s from 4 workers on and never rises again,
+while a single `curl` from this container pulls 78 MB/s from Google. A frame
+waits on that, because the snapshot blocks until the scene has resolved — so
+past 4 workers, extra workers divide the same tile bandwidth into more, slower
+frames. At 16 the fleet is spending ~33 CPU-seconds per frame mostly *waiting*.
+
+The counter-test: re-render one pose the workers have already streamed, so the
+tiles are in memory and nothing is fetched. Then it scales the way the hardware
+suggests — 0.36 f/s at 1 worker (median 2.7s), 2.66 at 8 (2.9s), 4.43 at 16
+(3.5s): **12× at 16 workers, with latency almost flat**.
+
+So nothing local is the ceiling, and there is no point tuning one. At 16
+workers the fleet uses ~30 of 96 cores, ~20% of each GPU and ~5GB of VRAM;
+running `--headless`, which removes the X server from the picture entirely,
+does not improve throughput. (The single-threaded `Xvfb` does saturate its one
+core at 12+ headed workers, and would matter on a machine that was not already
+waiting on tiles.) Pick `--workers` by what you are rendering: 4 is the honest
+number for arbitrary poses, while a workload that revisits the same area — a
+flyover, or many headings from one point — keeps scaling well past it.
 
 Each worker is a separate process rather than a tab, because one Chromium may
 hold a profile at a time: every worker gets its own throwaway copy of
@@ -153,7 +172,11 @@ hold a profile at a time: every worker gets its own throwaway copy of
 to *share* a cache between browsers: Chromium rewrites its cache entries in
 place, so a shared directory or a hardlink farm corrupts). The copies are
 deleted when the server stops, and `earth login` still writes only the real
-profile.
+profile. Skipping that cache means every worker starts cold, which given the
+measurements above is the one lever left worth pulling: *copying* it per worker
+(1.3GB each, free on a CoW filesystem — the copy already asks for
+`--reflink=auto`) would trade disk for exactly the tile fetches that cap
+throughput.
 
 Copies work because they carry the same logged-in Google session, and that was
 measured rather than assumed: at up to 8 concurrent workers, no worker was ever
@@ -162,8 +185,9 @@ byte-identical and still valid after every run — each copy rotates its own
 session cookies without invalidating the original. Google does not serialize an
 account, and local snapshot rendering is client-side WebGL, so extra workers add
 map-tile traffic rather than server-side render quota. What to watch for as N
-grows is a re-auth challenge (fix: `earth login` again) or tiles arriving slower
-or coarser — both would say you have found the account's practical ceiling.
+grows is a re-auth challenge (fix: `earth login` again); slower tiles you will
+find first, and that is the throughput ceiling measured above rather than a
+sign of anything wrong.
 One fleet spreads over every GPU the container was given, so a second container
 is not the unit of scaling. Chromium's Vulkan backend has no flag for picking a
 GPU — it takes the first device the driver enumerates, which would put every
@@ -178,8 +202,9 @@ restarted one comes back to the same card.
 There is nothing to configure: `GPUS=14,15 ./run.sh …` decides which GPUs exist,
 and the fleet uses what it finds. With one GPU, fewer than two workers, or no
 `CAP_SYS_ADMIN` to unshare with, it says so and falls back to leaving the
-workers unpinned. Past two GPUs the ceiling stops being the GPU and becomes RAM
-— at ~2.5GB per worker, 16 workers want ~40GB.
+workers unpinned. More than two GPUs will not raise throughput for arbitrary
+poses — the ceiling above is tile bandwidth, not GPU and not RAM (~2.5GB per
+worker, so 16 workers want ~40GB of the host's 1.5TB).
 
 ### Running with Docker
 
