@@ -87,14 +87,14 @@ That second line doubles as a smoke test: point it at a server you are
 debugging and it either leaves a viewable JPEG at `/tmp/f.jpg` or prints the
 error the API returned.
 
-`earth serve` starts a small HTTP API and keeps one logged-in Earth Studio
-page open for as long as it runs, instead of launching a fresh browser per
+`earth serve` starts a small HTTP API and keeps logged-in Earth Studio
+pages open for as long as it runs, instead of launching a fresh browser per
 request the way `earth render` does. `GET /frame` takes `lat`/`lon`/`alt`
 (camera position; `alt` in meters above sea level), `heading` (compass
 bearing, default `0`) and `tilt` (degrees from straight down, default `45`),
-and responds with the frame as `image/jpeg` — measured at 2.6–7.7s per
+and responds with the frame as `image/jpeg` — measured at 4.2–5.4s per
 request on a V100 at 1920x1080, most of it Earth Studio drawing. `GET /health`
-reports readiness.
+reports how many workers are ready.
 
 Frame size is set once per server with `--width`/`--height` rather than per
 request: it is the one property of a frame that cannot be changed without
@@ -106,8 +106,8 @@ logged-in Google session, it binds `127.0.0.1` by default (`--host` to change
 that). See `uv run earth serve --help` for the full option list, and *Running
 with Docker* below for reaching it from the host when running in a container.
 
-Two things make it quick, both of which avoid re-doing per request what Earth
-Studio only needs done once:
+Three things make it quick. Two avoid re-doing per request what Earth Studio
+only needs done once:
 
 - **The project is imported once, at startup.** A request types its camera
   pose straight into the editor's camera fields (Latitude, Longitude,
@@ -120,6 +120,53 @@ Studio only needs done once:
   and none of the native File System Access dialogs described under *Technical
   details*. `earth render` still uses the Render panel, because a snapshot is
   one frame and an animation is not.
+
+And the third answers several requests at a time:
+
+- **`--workers N` runs a fleet.** A frame is mostly Earth Studio drawing on the
+  GPU, so one browser leaves the machine idle. N worker processes, each with
+  its own browser and its own copy of the loaded project, sit behind one
+  dispatcher on the public port: `GET /frame` goes to a free worker, and a
+  request that finds none waits — the queue is the backpressure, so a client
+  can fire as many requests as it likes without picking a worker itself.
+  `GET /health` reports `ok - <ready>/<N> workers ready`, and a worker whose
+  browser dies is rebuilt in the background while the rest keep serving.
+
+Measured on one V100 at 1920x1080, three frames per worker:
+
+| `--workers` | throughput | speedup | median frame |
+| ----------- | ---------- | ------- | ------------ |
+| 1           | 0.10 f/s   | 1.0×    | 4.6s         |
+| 2           | 0.18 f/s   | 1.8×    | 5.2s         |
+| 4           | 0.31 f/s   | 3.1×    | 6.0s         |
+| 8           | 0.44 f/s   | 4.3×    | 9.5s         |
+
+Scaling is GPU-bound, not memory-bound: at 8 workers the GPU sits at ~85% while
+the fleet uses ~20GB of RAM and ~5GB of VRAM. Past 4 workers the extra
+throughput is bought with latency, so 4 is the sweet spot on this hardware and
+8 the point where a frame takes twice as long as it would alone.
+
+Each worker is a separate process rather than a tab, because one Chromium may
+hold a profile at a time: every worker gets its own throwaway copy of
+`.auth/chrome-profile/` in a temp dir (~90MB and ~0.1s each — `Default/Cache`,
+1.3GB of map tiles for places already visited, is skipped, and there is no way
+to *share* a cache between browsers: Chromium rewrites its cache entries in
+place, so a shared directory or a hardlink farm corrupts). The copies are
+deleted when the server stops, and `earth login` still writes only the real
+profile.
+
+Copies work because they carry the same logged-in Google session, and that was
+measured rather than assumed: at up to 8 concurrent workers, no worker was ever
+bounced to a sign-in page, and the master profile's cookies came back
+byte-identical and still valid after every run — each copy rotates its own
+session cookies without invalidating the original. Google does not serialize an
+account, and local snapshot rendering is client-side WebGL, so extra workers add
+map-tile traffic rather than server-side render quota. What to watch for as N
+grows is a re-auth challenge (fix: `earth login` again) or tiles arriving slower
+or coarser — both would say you have found the account's practical ceiling.
+Beyond one GPU, the unit of scaling is a second container: Chromium's Vulkan
+backend offers no per-process GPU selection, so pass one GPU per container
+(`GPUS=14 ./run.sh …`) rather than trying to spread one fleet over several.
 
 ### Running with Docker
 
@@ -267,6 +314,11 @@ automation work. Worth knowing before you run it:
 - **`.auth/chrome-profile/` holds a live Google session** (gitignored, never
   committed) — anyone with filesystem access to it can reuse your login
   without re-authenticating.
+- **`earth serve --workers N` copies the login profile N times** — each copy
+  holds the same live Google session and lives in a temp directory for as long
+  as the server runs (deleted on exit, killed hard and they linger). Anyone with
+  filesystem access to them can reuse your login, same as for the profile
+  itself.
 - **`earth serve` is unauthenticated** — anyone who can reach its port can
   drive the logged-in Earth Studio session to render frames. It binds
   `127.0.0.1` by default for exactly this reason; only pass `--host 0.0.0.0`
