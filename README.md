@@ -92,9 +92,8 @@ pages open for as long as it runs, instead of launching a fresh browser per
 request the way `earth render` does. `GET /frame` takes `lat`/`lon`/`alt`
 (camera position; `alt` in meters above sea level), `heading` (compass
 bearing, default `0`) and `tilt` (degrees from straight down, default `45`),
-and responds with the frame as `image/jpeg` — measured at 4.2–5.4s per
-request on a V100 at 1920x1080, most of it Earth Studio drawing. `GET /health`
-reports how many workers are ready.
+and responds with the frame as `image/jpeg`, most of the time spent on Earth
+Studio drawing. `GET /health` reports how many workers are ready.
 
 Frame size is set once per server with `--width`/`--height` rather than per
 request: it is the one property of a frame that cannot be changed without
@@ -115,7 +114,7 @@ only needs done once:
   import nor the whole-scene rebuild an import triggers.
 - **Frames are captured with Earth Studio's own snapshot button**, not the
   Render panel. It produces the same image at the project's resolution in half
-  the time (median 2.1s against 4.6s, usually byte-identical), and it arrives
+  the time, usually byte-identical, and it arrives
   as an ordinary browser download — so `earth serve` needs no output folder,
   and none of the native File System Access dialogs described under *Technical
   details*. `earth render` still uses the Render panel, because a snapshot is
@@ -124,56 +123,32 @@ only needs done once:
 And the third answers several requests at a time:
 
 - **`--workers N` runs a fleet.** One browser answering one request at a time
-  leaves the machine idle. N worker processes, each with
-  its own browser and its own copy of the loaded project, sit behind one
+  leaves the machine idle. N worker processes, each with its own browser and
+  its own copy of the loaded project, sit behind one
   dispatcher on the public port: `GET /frame` goes to a free worker, and a
   request that finds none waits — the queue is the backpressure, so a client
   can fire as many requests as it likes without picking a worker itself.
   `GET /health` reports `ok - <ready>/<N> workers ready`, and a worker whose
   browser dies is rebuilt in the background while the rest keep serving.
 
-Measured on two V100s at 1920x1080, over poses far enough apart to share no map
-tiles:
-
-| `--workers` | throughput | speedup | median frame | tile download |
-| ----------- | ---------- | ------- | ------------ | ------------- |
-| 1           | 0.15 f/s   | 1.0×    | 6.3s         | 2.1 MB/s      |
-| 2           | 0.30 f/s   | 2.0×    | 6.5s         | 4.2 MB/s      |
-| 4           | 0.64 f/s   | 4.3×    | 6.4s         | 7.2 MB/s      |
-| 8           | 0.83 f/s   | 5.5×    | 8.3s         | 7.2 MB/s      |
-| 16          | 0.89 f/s   | 6.0×    | 12.8s        | 7.8 MB/s      |
-
-Scaling is linear to 4 workers and then stops, and what stops it is **Google's
-map tiles, not this machine**. Look at the last column: the fleet's aggregate
-tile download flattens at 7-8 MB/s from 4 workers on and never rises again,
-while a single `curl` from this container pulls 78 MB/s from Google. A frame
-waits on that, because the snapshot blocks until the scene has resolved — so
-past 4 workers, extra workers divide the same tile bandwidth into more, slower
-frames. At 16 the fleet is spending ~33 CPU-seconds per frame mostly *waiting*.
-
-The counter-test: re-render one pose the workers have already streamed, so the
-tiles are in memory and nothing is fetched. Then it scales the way the hardware
-suggests — 0.36 f/s at 1 worker (median 2.7s), 2.66 at 8 (2.9s), 4.43 at 16
-(3.5s): **12× at 16 workers, with latency almost flat**.
-
-So nothing local is the ceiling, and there is no point tuning one. At 16
-workers the fleet uses ~30 of 96 cores, ~20% of each GPU and ~5GB of VRAM;
-running `--headless`, which removes the X server from the picture entirely,
-does not improve throughput. (The single-threaded `Xvfb` does saturate its one
-core at 12+ headed workers, and would matter on a machine that was not already
-waiting on tiles.) Pick `--workers` by what you are rendering: 4 is the honest
+How far that scales, and what stops it, is measured in
+[docs/performance.md](docs/performance.md): parallelism is linear to 4 workers
+and then flat, because the ceiling is Google's map-tile bandwidth rather than
+anything on the machine — no local resource is close to saturated. Poses that
+reuse tiles already streamed are not subject to that ceiling and keep scaling
+well past 4. So pick `--workers` by what you are rendering: 4 is the honest
 number for arbitrary poses, while a workload that revisits the same area — a
-flyover, or many headings from one point — keeps scaling well past it.
+flyover, or many headings from one point — goes much higher.
 
 Each worker is a separate process rather than a tab, because one Chromium may
 hold a profile at a time: every worker gets its own throwaway copy of
-`.auth/chrome-profile/` in a temp dir (~90MB and ~0.1s each — `Default/Cache`,
+`.auth/chrome-profile/` in a temp dir (~90MB each — `Default/Cache`,
 1.3GB of map tiles for places already visited, is skipped, and there is no way
 to *share* a cache between browsers: Chromium rewrites its cache entries in
 place, so a shared directory or a hardlink farm corrupts). The copies are
 deleted when the server stops, and `earth login` still writes only the real
 profile. Skipping that cache means every worker starts cold, which given the
-measurements above is the one lever left worth pulling: *copying* it per worker
+tile ceiling is the one lever left worth pulling: *copying* it per worker
 (1.3GB each, free on a CoW filesystem — the copy already asks for
 `--reflink=auto`) would trade disk for exactly the tile fetches that cap
 throughput.
@@ -186,8 +161,9 @@ session cookies without invalidating the original. Google does not serialize an
 account, and local snapshot rendering is client-side WebGL, so extra workers add
 map-tile traffic rather than server-side render quota. What to watch for as N
 grows is a re-auth challenge (fix: `earth login` again); slower tiles you will
-find first, and that is the throughput ceiling measured above rather than a
-sign of anything wrong.
+find first, and that is the throughput ceiling described in
+[docs/performance.md](docs/performance.md) rather than a sign of anything wrong.
+
 One fleet spreads over every GPU the container was given, so a second container
 is not the unit of scaling. Chromium's Vulkan backend has no flag for picking a
 GPU — it takes the first device the driver enumerates, which would put every
@@ -202,9 +178,9 @@ restarted one comes back to the same card.
 There is nothing to configure: `GPUS=14,15 ./run.sh …` decides which GPUs exist,
 and the fleet uses what it finds. With one GPU, fewer than two workers, or no
 `CAP_SYS_ADMIN` to unshare with, it says so and falls back to leaving the
-workers unpinned. More than two GPUs will not raise throughput for arbitrary
-poses — the ceiling above is tile bandwidth, not GPU and not RAM (~2.5GB per
-worker, so 16 workers want ~40GB of the host's 1.5TB).
+workers unpinned. More GPUs will not raise throughput for arbitrary poses,
+because the ceiling there is tile bandwidth rather than the GPU; what a large
+fleet does want is RAM, at roughly 2.5GB per worker.
 
 ### Running with Docker
 
@@ -281,12 +257,11 @@ this.
 ## GPU acceleration
 
 Chromium renders Earth Studio's WebGL canvas on the GPU when one is available
-and in software (SwiftShader) otherwise. Measured on a Tesla V100 at
-1920×1080, software costs about 1.2× end-to-end (95s vs 77s for ten frames) —
-the frames themselves render 1.4× slower, and its first frame takes 13.1s
-against the GPU's 4.4s, but a large share of any short render is fixed
-browser and UI overhead that the GPU does nothing for. The gap matters for
-long flyovers, not for a handful of frames.
+and in software (SwiftShader) otherwise. Software is slower, but by less than
+you might expect, because a large share of any short render is fixed browser
+and UI overhead that the GPU does nothing for — see
+[docs/performance.md](docs/performance.md) for the comparison. The gap matters
+for long flyovers, not for a handful of frames.
 
 `launch_context()` passes `--use-gl=angle --use-angle=vulkan
 --ignore-gpu-blocklist`; on the render host that Vulkan path is the only combo
