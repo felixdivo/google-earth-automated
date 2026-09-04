@@ -8,13 +8,19 @@ needs a display (X11/VNC forwarded into the container, or run natively on the
 host) -- this devcontainer has no display/GPU by default.
 """
 
+import os
 from contextlib import suppress
 from pathlib import Path
 
 from playwright.sync_api import BrowserContext, Page, Playwright
 from playwright.sync_api import Error as PlaywrightError
 
-PROFILE_DIR = Path(__file__).resolve().parent.parent / ".auth" / "chrome-profile"
+# One Chromium may hold a profile at a time, so `earth serve` runs each of its
+# workers on a throwaway copy of this one and names that copy in
+# EARTH_PROFILE_DIR. Every other command -- and the fleet's parent process --
+# gets the real profile, which is the only one `earth login` ever writes.
+_DEFAULT_PROFILE_DIR = Path(__file__).resolve().parent.parent / ".auth" / "chrome-profile"
+PROFILE_DIR = Path(os.environ.get("EARTH_PROFILE_DIR") or _DEFAULT_PROFILE_DIR)
 
 EARTH_STUDIO_URL = "https://earth.google.com/studio"
 
@@ -57,6 +63,14 @@ def launch_context(playwright: Playwright, *, headless: bool = False) -> Browser
         # mid-render) otherwise leaves a "Restore pages?" bubble that steals
         # focus from the keyboard input the render command aims at the render
         # dialog's permission prompts.
+        #
+        # The four --disable-*background*/occlusion flags keep a window that is
+        # not on top drawing at full speed. `earth serve --workers N` puts N
+        # browser windows on one 1280x800 virtual display, so all but one are
+        # always covered, and Chromium's default is to throttle a covered
+        # window's timers and requestAnimationFrame -- which is exactly the loop
+        # Earth Studio's canvas renders on, so a snapshot there would stall
+        # instead of arriving.
         args=[
             "--disable-blink-features=AutomationControlled",
             "--test-type",
@@ -65,6 +79,10 @@ def launch_context(playwright: Playwright, *, headless: bool = False) -> Browser
             "--enable-features=Vulkan",
             "--ignore-gpu-blocklist",
             "--hide-crash-restore-bubble",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-features=CalculateNativeWinOcclusion",
         ],
         ignore_default_args=["--enable-automation"],
     )
