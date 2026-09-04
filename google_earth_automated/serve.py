@@ -22,6 +22,13 @@ three frames per worker: 0.10 frames/s at --workers 1 (median 4.6s per frame),
 0.18 at 2, 0.31 at 4, 0.44 at 8 (median 9.5s, GPU pegged at ~85%). Past 4 the
 extra throughput is bought with latency.
 
+Which is why the fleet spreads itself over every GPU the container was given,
+round-robin. Chromium's Vulkan backend has no flag for choosing one, so each
+worker is launched in a mount namespace that hides the other GPUs' device nodes
+-- see _pin_to_gpu. Nothing to configure: `GPUS=14,15 ./run.sh` decides what
+there is, and one GPU or an unprivileged container quietly means the old
+single-GPU behaviour.
+
 Each worker is a process, not a tab, because one Chromium may hold a profile at
 a time: every worker gets a throwaway copy of .auth/chrome-profile (~90MB --
 Default/Cache, 1.3GB of map tiles for places already visited, is skipped) in a
@@ -53,6 +60,7 @@ there unchanged. Workers themselves always listen on loopback only.
 
 import os
 import queue
+import shlex
 import shutil
 import socket
 import subprocess
@@ -300,13 +308,67 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _gpu_nodes() -> list[Path]:
+    """The GPU device nodes this container can see, in a stable order.
+
+    /dev/nvidiaN is one GPU. Which ones exist is decided at the container
+    boundary (`GPUS=14,15 ./run.sh`, or the devcontainer's CDI runArgs), so this
+    needs no option of its own: whatever was passed in is what the fleet
+    spreads over.
+    """
+    nodes = [p for p in Path("/dev").glob("nvidia*") if p.name[6:].isdigit()]
+    return sorted(nodes, key=lambda p: int(p.name[6:]))
+
+
+def _pin_to_gpu(node: Path) -> list[str]:
+    """A command prefix that runs its argv seeing only `node` of the GPUs.
+
+    Chromium's Vulkan backend has no flag for picking a GPU: it takes the first
+    physical device the driver enumerates, so every worker in a fleet piles onto
+    the same card while the others idle. But NVIDIA's userspace enumerates from
+    the /dev/nvidiaN nodes, so a worker that cannot see a node does not see that
+    GPU -- and a mount namespace makes "cannot see" a per-process property.
+    Each worker therefore starts in its own namespace with /dev/null bound over
+    the nodes it is not meant to use; the bind is private, so it is invisible to
+    the rest of the container and disappears with the worker.
+
+    Needs CAP_SYS_ADMIN, which `run.sh` and the devcontainer already grant for
+    FUSE. `_pinning_works` checks before the fleet relies on it.
+    """
+    hidden = " ".join(shlex.quote(str(p)) for p in _gpu_nodes() if p != node)
+    script = f'for d in {hidden}; do mount --bind /dev/null "$d" || exit 1; done; exec "$@"'
+    return ["unshare", "--mount", "--propagation", "private", "--", "sh", "-c", script, "sh"]
+
+
+def _pinning_works(node: Path) -> bool:
+    """Probe the namespace trick once, so a fleet never half-starts on it.
+
+    Cheap (a few ms) and worth it: unshare or the bind can fail for reasons that
+    have nothing to do with this code -- no CAP_SYS_ADMIN, a hostile seccomp
+    profile, a host without util-linux -- and a fleet that discovers that N
+    times in N workers just fails to start with no explanation.
+    """
+    try:
+        probe = subprocess.run(
+            [*_pin_to_gpu(node), "true"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0
+
+
 class Worker:
     """One worker process: its own profile copy, its own port, its own browser."""
 
-    def __init__(self, index: int, profile_dir: Path, config: dict):
+    def __init__(self, index: int, profile_dir: Path, config: dict, gpu: Path | None = None):
         self.index = index
         self.profile_dir = profile_dir
         self.config = config
+        self.gpu = gpu
         self.port = _free_port()
         self.process = self._spawn()
 
@@ -319,6 +381,7 @@ class Worker:
         # whether the parent was started as `uv run earth`, `python -m ...`, or
         # from an installed entry point.
         command = [
+            *(_pin_to_gpu(self.gpu) if self.gpu else []),
             sys.executable,
             "-m",
             "google_earth_automated",
@@ -396,10 +459,11 @@ class WorkerPool:
     queue, which is where backpressure comes from.
     """
 
-    def __init__(self, root: Path, count: int, config: dict):
+    def __init__(self, root: Path, count: int, config: dict, gpus: list[Path] | None = None):
         self.root = root
         self.count = count
         self.config = config
+        self.gpus = gpus or []
         self._idle: queue.Queue[Worker] = queue.Queue()
         self._workers: dict[int, Worker] = {}
         self._lock = threading.Lock()
@@ -449,7 +513,10 @@ class WorkerPool:
         profile_dir = self.root / f"profile-{index}"
         shutil.rmtree(profile_dir, ignore_errors=True)
         copy_profile(profile_dir)
-        worker = Worker(index, profile_dir, self.config)
+        # Round-robin by index, so a restarted worker returns to the same GPU
+        # and the fleet stays evenly spread however often it is rebuilt.
+        gpu = self.gpus[index % len(self.gpus)] if self.gpus else None
+        worker = Worker(index, profile_dir, self.config, gpu)
         if worker.wait_until_ready(WORKER_STARTUP_TIMEOUT_S):
             results[index] = worker
         else:
@@ -563,6 +630,26 @@ class _DispatchHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+def _fleet_gpus(workers: int) -> list[Path]:
+    """The GPUs worth spreading `workers` over, or [] to leave them unpinned.
+
+    Nothing to gain from pinning a fleet that has one GPU to choose from, or
+    fewer workers than GPUs would each get one -- and every case that opts out
+    here is the old, unpinned behaviour, unchanged.
+    """
+    nodes = _gpu_nodes()
+    if len(nodes) < 2 or workers < 2:
+        return []
+    if not _pinning_works(nodes[0]):
+        print(
+            "warning: cannot pin workers to GPUs (needs CAP_SYS_ADMIN) -- "
+            f"all {workers} workers will share one of the {len(nodes)} GPUs",
+            flush=True,
+        )
+        return []
+    return nodes
+
+
 def _serve_fleet(
     *,
     host: str,
@@ -580,9 +667,14 @@ def _serve_fleet(
         "height": height,
         "frame_timeout": frame_timeout,
     }
-    pool = WorkerPool(root, workers, config)
+    gpus = _fleet_gpus(workers)
+    pool = WorkerPool(root, workers, config, gpus)
     try:
-        print(f"Starting {workers} worker(s), each on its own copy of the profile...", flush=True)
+        spread = f" across {len(gpus)} GPUs" if gpus else ""
+        print(
+            f"Starting {workers} worker(s){spread}, each on its own copy of the profile...",
+            flush=True,
+        )
         pool.start()
 
         _DispatchHandler.pool = pool

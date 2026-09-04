@@ -164,9 +164,22 @@ account, and local snapshot rendering is client-side WebGL, so extra workers add
 map-tile traffic rather than server-side render quota. What to watch for as N
 grows is a re-auth challenge (fix: `earth login` again) or tiles arriving slower
 or coarser — both would say you have found the account's practical ceiling.
-Beyond one GPU, the unit of scaling is a second container: Chromium's Vulkan
-backend offers no per-process GPU selection, so pass one GPU per container
-(`GPUS=14 ./run.sh …`) rather than trying to spread one fleet over several.
+One fleet spreads over every GPU the container was given, so a second container
+is not the unit of scaling. Chromium's Vulkan backend has no flag for picking a
+GPU — it takes the first device the driver enumerates, which would put every
+worker on the same card — but NVIDIA's userspace enumerates from the
+`/dev/nvidiaN` device nodes, and a mount namespace makes those a per-process
+matter. Each worker is therefore started under `unshare --mount` with
+`/dev/null` bound over the nodes it should not use, and sees exactly one GPU;
+the binds are private, so they are invisible to the rest of the container and
+vanish with the worker. Workers are assigned round-robin by index, so a
+restarted one comes back to the same card.
+
+There is nothing to configure: `GPUS=14,15 ./run.sh …` decides which GPUs exist,
+and the fleet uses what it finds. With one GPU, fewer than two workers, or no
+`CAP_SYS_ADMIN` to unshare with, it says so and falls back to leaving the
+workers unpinned. Past two GPUs the ceiling stops being the GPU and becomes RAM
+— at ~2.5GB per worker, 16 workers want ~40GB.
 
 ### Running with Docker
 
@@ -257,7 +270,8 @@ on Mesa llvmpipe — both CPU).
 
 - **Linux host with an NVIDIA GPU** — `./run.sh` and the devcontainer both
   pass the GPU in via CDI (`--device=nvidia.com/gpu=…`); nothing else to
-  configure.
+  configure. Pass several and `earth serve --workers N` spreads its fleet
+  across them (see *Serving frames over HTTP*).
 - **Windows (Docker Desktop, WSL2 backend)** — untested here; would need
   WSL2's `/dev/dxg` + `/usr/lib/wsl/lib` bind-mounted into the container and
   the ANGLE backend switched to `d3d12`.
