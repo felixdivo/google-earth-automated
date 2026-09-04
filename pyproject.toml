@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.13"
 license = "MIT"
 authors = [{ name = "Felix Divo", email = "felix.divo@tu-darmstadt.de" }]
-dependencies = ["rich>=13", "playwright>=1.47,<2", "typer>=0.15,<1"]
+dependencies = ["playwright>=1.47,<2", "typer>=0.15,<1", "gunicorn>=23,<24"]
 
 [project.scripts]
 earth = "google_earth_automated.cli:main"

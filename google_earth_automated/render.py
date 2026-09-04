@@ -48,8 +48,10 @@ import typer
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page, Playwright, sync_playwright
 
+from . import REPO_ROOT
 from .browser import (
     EARTH_STUDIO_URL,
+    PROFILE_DIR,
     close_quietly,
     first_page,
     gpu_status,
@@ -631,7 +633,6 @@ def wait_for_frames(
     )
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "out"
 
 
@@ -663,8 +664,10 @@ class Session:
     paid once instead of on every render -- what makes `earth serve` fast.
     """
 
-    def __init__(self, playwright: Playwright, *, headless: bool = False):
-        self.context = launch_context(playwright, headless=headless)
+    def __init__(
+        self, playwright: Playwright, *, profile_dir: Path = PROFILE_DIR, headless: bool = False
+    ):
+        self.context = launch_context(playwright, profile_dir=profile_dir, headless=headless)
         # From here on the browser is running, so every exit -- a failed
         # login check, a Ctrl-C during the SPA load, which is where an
         # interrupt most often lands -- has to take it down with it.

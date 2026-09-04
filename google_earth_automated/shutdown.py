@@ -14,8 +14,10 @@ None of that is actionable -- it is the browser being closed while a call was
 in flight, which is exactly what Ctrl-C asked for. The handler below silences
 it at the source, then raises KeyboardInterrupt so the interrupt propagates
 normally and each command's own `finally` gets to close its browser. SIGTERM
-is handled the same way, so `docker stop` on a long-running `earth serve` shuts
-down as gracefully as Ctrl-C does.
+is handled the same way, so `docker stop` shuts a command down as gracefully as
+Ctrl-C does. `earth serve` is the exception: gunicorn's arbiter installs its own
+SIGINT/SIGTERM handlers over these, and closes each worker's browser from its
+own worker_exit hook instead.
 
 Cleanup gets GRACE_PERIOD_S and no longer, because it can hang outright:
 interrupting a browser *launch* leaves Playwright's teardown waiting forever on

@@ -8,35 +8,37 @@ needs a display (X11/VNC forwarded into the container, or run natively on the
 host) -- this devcontainer has no display/GPU by default.
 """
 
-import os
 from contextlib import suppress
 from pathlib import Path
 
 from playwright.sync_api import BrowserContext, Page, Playwright
 from playwright.sync_api import Error as PlaywrightError
 
-# One Chromium may hold a profile at a time, so `earth serve` runs each of its
-# workers on a throwaway copy of this one and names that copy in
-# EARTH_PROFILE_DIR. Every other command -- and the fleet's parent process --
-# gets the real profile, which is the only one `earth login` ever writes.
-_DEFAULT_PROFILE_DIR = Path(__file__).resolve().parent.parent / ".auth" / "chrome-profile"
-PROFILE_DIR = Path(os.environ.get("EARTH_PROFILE_DIR") or _DEFAULT_PROFILE_DIR)
+from . import REPO_ROOT
+
+# The real profile, and the only one `earth login` ever writes. One Chromium may
+# hold a profile at a time, so `earth serve` runs each of its workers on a
+# throwaway copy and passes that copy as launch_context's profile_dir; every
+# other command takes the default below.
+PROFILE_DIR = REPO_ROOT / ".auth" / "chrome-profile"
 
 EARTH_STUDIO_URL = "https://earth.google.com/studio"
 
 
-def launch_context(playwright: Playwright, *, headless: bool = False) -> BrowserContext:
-    """Launch (or reattach to) the persistent Earth Studio browser profile."""
-    PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+def launch_context(
+    playwright: Playwright, *, profile_dir: Path = PROFILE_DIR, headless: bool = False
+) -> BrowserContext:
+    """Launch (or reattach to) a persistent Earth Studio browser profile."""
+    profile_dir.mkdir(parents=True, exist_ok=True)
     # Chromium's singleton lock embeds the container hostname, which changes
     # on every devcontainer rebuild -- so a stale lock from a previous run
     # (e.g. the container being stopped without Chromium exiting cleanly)
     # always looks like another machine holds the profile. This profile is
     # only ever driven by one process at a time here, so it's safe to clear.
     for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
-        (PROFILE_DIR / name).unlink(missing_ok=True)
+        (profile_dir / name).unlink(missing_ok=True)
     return playwright.chromium.launch_persistent_context(
-        PROFILE_DIR,
+        profile_dir,
         headless=headless,
         # Google's sign-in flow detects the --enable-automation flag/infobar
         # Playwright adds by default and blocks login with "This browser or

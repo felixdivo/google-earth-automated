@@ -1,99 +1,66 @@
 """Serve single Earth Studio frames over HTTP, from a pool of warm browsers.
 
     uv run earth serve
-    uv run earth serve --workers 4
-    uv run earth serve --port 9000 --headless
+    uv run earth serve --workers 4 --port 9000
+    curl -o frame.jpg 'http://localhost:8000/frame?lat=50.107&lon=8.663&alt=145'
 
-`earth serve` runs a fleet: N worker processes, each keeping one logged-in Earth
-Studio page open with a single scratch project loaded, behind one dispatcher on
-the public port. A request types its camera pose into the camera fields of the
-project that worker already has open, takes a snapshot, and streams the JPEG
-straight back.
+A gunicorn fleet: N worker processes behind one listening socket, each keeping
+one logged-in Earth Studio page open with a single scratch project loaded. A
+request types its camera pose into the camera fields of the project that worker
+already has open, takes a snapshot, and streams the JPEG straight back --
+nothing is imported per request, so the import and the whole-scene rebuild it
+triggers are paid once per worker, at startup.
 
-Three things make that fast. Nothing is imported per request, so the import and
-the whole-scene rebuild it triggers are paid once per worker at startup. Frames
-are captured with Earth Studio's own snapshot button rather than through the
-render panel: same resolution (the project's, not the viewport's), half the
+Frames are captured with Earth Studio's own snapshot button rather than through
+the render panel: same resolution (the project's, not the viewport's), half the
 time, and no output folder -- which means no File System Access grant and none
-of the native-dialog machinery `earth render` needs. And requests run N at a
-time instead of one, because one browser leaves the machine idle. Measured on
-this host at 1920x1080 over poses far enough apart to share no map tiles: 0.15
-frames/s at --workers 1 (median 6.3s per frame), 0.30 at 2, 0.64 at 4, 0.83 at
-8 (median 8.3s), 0.89 at 16 (median 12.8s).
-
-So scaling is linear to 4 workers and then stops, and what stops it is Google's
-map tiles rather than this machine. The fleet's aggregate tile download sits at
-7-8 MB/s from 4 workers on and does not rise with more -- on a link that pulls
-78 MB/s from Google in a single stream -- while the frame itself waits: the
-snapshot blocks until the scene resolves. Re-rendering one pose the workers
-have already streamed, so that the tiles are in memory, scales the way the
-hardware would suggest: 0.36 frames/s at 1 worker (median 2.7s), 2.66 at 8
-(2.9s), 4.43 at 16 (3.5s) -- 12x, with latency almost flat. Nothing local is
-close to full: at 16 workers the fleet uses ~30 of 96 cores and ~20% of each
-GPU, and running headless (no X server at all) does not help. How much a pose
-costs therefore depends on how much of it has to be fetched -- measured frames
-pulled 9-14 MB each, and a pose a worker has already seen pulls nothing.
-
-The fleet still spreads itself over every GPU the container was given,
-round-robin. Chromium's Vulkan backend has no flag for choosing one, so each
-worker is launched in a mount namespace that hides the other GPUs' device nodes
--- see _pin_to_gpu. Nothing to configure: `GPUS=14,15 ./run.sh` decides what
-there is, and one GPU or an unprivileged container quietly means the old
-single-GPU behaviour.
+of the native-dialog machinery `earth render` needs. That is also why the fleet
+is always headless: nothing here ever raises a native dialog that a keystroke
+would have to be aimed at a real window to answer.
 
 Each worker is a process, not a tab, because one Chromium may hold a profile at
-a time: every worker gets a throwaway copy of .auth/chrome-profile (~90MB --
-Default/Cache, 1.3GB of map tiles for places already visited, is skipped) in a
-temp dir that is deleted on the way out. Copies are why the fleet works: they
-carry the same logged-in Google session, and measured up to 8 at once, no worker
-was ever sent back to a sign-in page and the master profile's cookies came back
-untouched. `earth login` still writes only the real profile.
+a time -- so every worker gets a throwaway copy of the login profile (see
+copy_profile) and, where the container was given several GPUs, one of those to
+itself (see gpu_pinning.py). Frame size is fixed for the life of the server: it
+is the one thing a request cannot change without importing a new project. No
+frame is ever written to disk -- snapshots are read out of the browser's
+download and deleted -- and nothing is ever written under the repo.
 
-Frame size is fixed for the life of the server (--width/--height), because it is
-the one thing a request cannot change without importing a new project.
-
-The server writes no frames to disk at all -- snapshots are read out of the
-browser's download and deleted -- and nothing is ever written under the repo.
+How fast this is, how far --workers scales and what stops it: docs/performance.md.
 
 Requires a logged-in session -- run `earth login` first.
-
-    curl -o frame.jpg \\
-        'http://localhost:8000/frame?lat=50.1070&lon=8.6633&alt=145&heading=180&tilt=70'
 
 Binds 127.0.0.1 by default -- there's no auth on this API, so the default keeps
 it off the network entirely. Running through `./run.sh` (real Docker port
 publishing, which routes through the container's bridge interface rather than
 its loopback) needs `--host 0.0.0.0` for `--publish` to have anything to reach;
-`run.sh` binds that published port to the *host's* own 127.0.0.1 (see run.sh),
-so it stays host-local either way. The devcontainer's own port forwarding
-proxies inside the container's network namespace, so the 127.0.0.1 default works
-there unchanged. Workers themselves always listen on loopback only.
+run.sh binds that published port to the *host's* own 127.0.0.1, so it stays
+host-local either way. The devcontainer's own port forwarding proxies inside the
+container's network namespace, so the default works there unchanged.
 """
 
 import os
-import queue
-import shlex
 import shutil
-import socket
-import subprocess
+import signal
 import sys
 import tempfile
-import threading
-import time
+from collections.abc import Callable
+from contextlib import ExitStack
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
+from itertools import count
 from pathlib import Path
 from typing import Annotated
-from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlsplit
-from urllib.request import urlopen
+from urllib.parse import parse_qs
 
 import typer
+from gunicorn.app.base import BaseApplication
+from gunicorn.arbiter import Arbiter
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
-from .browser import PROFILE_DIR
+from . import browser
 from .build import build_still_esp, write_esp
+from .gpu_pinning import fleet_gpus, pin_to_gpu
 from .render import NotLoggedInError, Session
 
 # The known ways a frame can fail -- Playwright interaction errors (a moved
@@ -108,22 +75,29 @@ RENDER_ERRORS = (PlaywrightError, RuntimeError, TimeoutError, OSError)
 # name, so it is fixed and boring on purpose.
 PROJECT_NAME = "earth-serve"
 
+# Every frame this server will ever produce is this size: it comes from the
+# imported project, and re-importing per request is exactly the cost the fleet
+# exists to avoid.
+FRAME_WIDTH = 1920
+FRAME_HEIGHT = 1080
+
+# How long one snapshot may take before the request gives up and says so.
 DEFAULT_FRAME_TIMEOUT_S = 180.0
 
-# How long a worker gets to launch its browser, load the SPA and import the
-# scratch project before the fleet gives up on it. Generous: it covers a cold
-# Chromium start on a busy machine, and it is only ever waited out on failure.
-WORKER_STARTUP_TIMEOUT_S = 300.0
+# How long a worker may go without finishing a request before gunicorn decides
+# it is wedged rather than slow, kills it and forks a replacement. Past the
+# frame timeout by enough that a merely slow frame fails inside the request,
+# where it can say what went wrong, instead of taking its browser down with it.
+WORKER_TIMEOUT_S = DEFAULT_FRAME_TIMEOUT_S + 30.0
 
-# How long the whole fleet gets to exit before its workers are killed outright.
-# Comfortably inside shutdown.py's GRACE_PERIOD_S, so the profile copies still
-# get deleted rather than the parent being force-exited on top of them.
-FLEET_SHUTDOWN_S = 4.0
-
-# How long a request waits for a worker to come free before giving up with 503.
-# Long, because "all workers busy" is the normal state under load and a caller
-# would rather wait than retry -- the queue is the backpressure.
-WORKER_WAIT_TIMEOUT_S = 300.0
+# gunicorn's hooks are plain callables with nowhere to hang state, so what the
+# arbiter works out before it forks reaches the workers the only way it can: as
+# module globals, carried across the fork. _session is the other direction --
+# post_fork owns it, and the WSGI callable below has no handle on the worker
+# object to reach it any other way.
+_profile_root: Path
+_gpus: list[Path] = []
+_session: Session | None = None
 
 
 def _parse_float(params: dict, name: str, *, default: float | None = None) -> float:
@@ -138,7 +112,7 @@ def _parse_float(params: dict, name: str, *, default: float | None = None) -> fl
         raise ValueError(f"parameter '{name}' must be a number, got {values[0]!r}") from e
 
 
-def load_project(session: Session, *, width: int, height: int) -> None:
+def load_project(session: Session) -> None:
     """Import the scratch project this worker re-poses for the rest of its life.
 
     No warmup render: capturing with the snapshot button needs no output folder,
@@ -153,7 +127,14 @@ def load_project(session: Session, *, width: int, height: int) -> None:
     PROJECT_NAME whatever the file is called.
     """
     esp = build_still_esp(
-        0.0, 0.0, 1000.0, heading=0.0, tilt=45.0, name=PROJECT_NAME, width=width, height=height
+        0.0,
+        0.0,
+        1000.0,
+        heading=0.0,
+        tilt=45.0,
+        name=PROJECT_NAME,
+        width=FRAME_WIDTH,
+        height=FRAME_HEIGHT,
     )
     handle, path = tempfile.mkstemp(prefix="earth-serve-", suffix=".esp")
     os.close(handle)
@@ -165,115 +146,12 @@ def load_project(session: Session, *, width: int, height: int) -> None:
         esp_file.unlink(missing_ok=True)
 
 
-# --- the worker: one browser, one project, one frame at a time ----------------
-
-
-class _FrameRequestHandler(BaseHTTPRequestHandler):
-    # BaseHTTPRequestHandler builds one instance per request, so these are set
-    # as class attributes before serve_forever() to reach every instance.
-    session: Session
-    frame_timeout_s: float
-
-    def log_message(self, log_format: str, *args) -> None:
-        print(f"{self.address_string()} - {log_format % args}", flush=True)
-
-    def do_GET(self) -> None:
-        path = urlsplit(self.path).path
-        if path == "/health":
-            self._respond_text(HTTPStatus.OK, "ok")
-        elif path == "/frame":
-            self._handle_frame()
-        else:
-            self._respond_text(HTTPStatus.NOT_FOUND, f"no such endpoint: {path}")
-
-    def _handle_frame(self) -> None:
-        params = parse_qs(urlsplit(self.path).query)
-        try:
-            lat = _parse_float(params, "lat")
-            lon = _parse_float(params, "lon")
-            alt = _parse_float(params, "alt")
-            heading = _parse_float(params, "heading", default=0.0)
-            tilt = _parse_float(params, "tilt", default=45.0)
-        except ValueError as e:
-            self._respond_text(HTTPStatus.BAD_REQUEST, str(e))
-            return
-
-        try:
-            jpeg_bytes = self.session.capture_pose(
-                lat=lat,
-                lon=lon,
-                alt=alt,
-                heading=heading,
-                tilt=tilt,
-                timeout_ms=int(self.frame_timeout_s * 1000),
-            )
-        except RENDER_ERRORS as e:
-            self.log_message("frame failed: %s", e)
-            self._respond_text(HTTPStatus.INTERNAL_SERVER_ERROR, f"frame failed: {e}")
-            return
-
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "image/jpeg")
-        self.send_header("Content-Length", str(len(jpeg_bytes)))
-        self.end_headers()
-        self.wfile.write(jpeg_bytes)
-
-    def _respond_text(self, status: HTTPStatus, message: str) -> None:
-        body = message.encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-
-def _serve_worker(
-    *, host: str, port: int, headless: bool, width: int, height: int, frame_timeout: float
-) -> None:
-    """One browser answering one frame at a time, on its own port.
-
-    Single-threaded on purpose: this process owns exactly one Chromium profile
-    and one Earth Studio page (Playwright's sync API isn't thread-safe either),
-    so its requests serialize no matter what. Concurrency comes from running
-    several of these -- see _serve_fleet().
-    """
-    with sync_playwright() as playwright:
-        try:
-            session = Session(playwright, headless=headless)
-        except NotLoggedInError as e:
-            sys.exit(f"error: {e}")
-
-        # Everything past this point owns a live browser, and any of it can be
-        # cut short by Ctrl-C (or SIGTERM, e.g. `docker stop`) -- during the
-        # warmup, while idle, or mid-render inside a request. All three exit
-        # through this one finally.
-        try:
-            print(f"Loading a {width}x{height} project...", flush=True)
-            try:
-                load_project(session, width=width, height=height)
-            except RENDER_ERRORS as e:
-                sys.exit(f"error: could not load the scratch project: {e}")
-
-            _FrameRequestHandler.session = session
-            _FrameRequestHandler.frame_timeout_s = frame_timeout
-
-            # `with` closes the listening socket on the way out, so the port is
-            # free again the moment the server stops.
-            with HTTPServer((host, port), _FrameRequestHandler) as server:
-                print(f"Worker ready on http://{host}:{port}", flush=True)
-                try:
-                    server.serve_forever()
-                except KeyboardInterrupt:
-                    pass  # the signal handler already said so
-        finally:
-            session.close()
-
-
-# --- the fleet: N workers behind one port -------------------------------------
-
-
 def copy_profile(dest: Path) -> None:
     """Copy the login profile for one worker to run on.
+
+    Copies are why the fleet works at all: they carry the same logged-in Google
+    session, and measured with up to 8 running at once, no worker was ever sent
+    back to a sign-in page and the master profile's cookies came back untouched.
 
     Skips Default/Cache -- 1.3GB of the profile's 1.4GB, and nothing but map
     tiles for places already visited, which a server answering arbitrary poses
@@ -282,430 +160,197 @@ def copy_profile(dest: Path) -> None:
     directory, or a hardlink farm, corrupts.) The Singleton* files are the lock
     tying a profile to one running browser, so a copy must not inherit them.
 
-    Shells out to `cp` for --reflink=auto: a plain copy on ext4, near-free on a
-    CoW filesystem. Measured at ~90MB and ~0.1s per worker here.
+    A plain copytree: measured at ~90MB and ~0.1s per worker here, paid once at
+    worker startup, so the copy-on-write tricks that would make it near-free on
+    btrfs or xfs (os.copy_file_range(), or shelling out to `cp --reflink=auto`)
+    buy nothing worth the complexity.
     """
-    dest.mkdir(parents=True)
-    top = [
-        entry
-        for entry in PROFILE_DIR.iterdir()
-        if entry.name != "Default" and not entry.name.startswith("Singleton")
-    ]
-    _copy_into(top, dest)
-    default = PROFILE_DIR / "Default"
-    if default.is_dir():
-        (dest / "Default").mkdir()
-        _copy_into([e for e in default.iterdir() if e.name != "Cache"], dest / "Default")
+    shutil.copytree(browser.PROFILE_DIR, dest, ignore=shutil.ignore_patterns("Cache", "Singleton*"))
 
 
-def _copy_into(sources: list[Path], dest: Path) -> None:
-    """`cp` has no --exclude, so the entries to keep are named explicitly, in
-    batches small enough to stay well clear of the argument limit."""
-    for start in range(0, len(sources), 200):
-        subprocess.run(
-            [
-                "cp",
-                "-a",
-                "--reflink=auto",
-                *[str(s) for s in sources[start : start + 200]],
-                str(dest),
-            ],
-            check=True,
-        )
+# --- the HTTP surface: two GETs, no framework ---------------------------------
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+def application(environ: dict, start_response: Callable) -> list[bytes]:
+    """The WSGI callable every gunicorn worker serves.
 
-
-def _gpu_nodes() -> list[Path]:
-    """The GPU device nodes this container can see, in a stable order.
-
-    /dev/nvidiaN is one GPU. Which ones exist is decided at the container
-    boundary (`GPUS=14,15 ./run.sh`, or the devcontainer's CDI runArgs), so this
-    needs no option of its own: whatever was passed in is what the fleet
-    spreads over.
+    Two routes do not justify a framework. They are also served one at a time
+    per worker, by gunicorn's default sync worker: this process owns exactly one
+    Chromium profile and one Earth Studio page (Playwright's sync API isn't
+    thread-safe either), so its requests would serialize whatever it did.
+    Concurrency is the fleet, not the worker.
     """
-    nodes = [p for p in Path("/dev").glob("nvidia*") if p.name[6:].isdigit()]
-    return sorted(nodes, key=lambda p: int(p.name[6:]))
+    path = environ.get("PATH_INFO", "")
+    if path == "/health":
+        # gunicorn's own bookkeeping is the readiness check: a worker is only
+        # added to the accept loop once post_fork has handed it a warm browser,
+        # so anything that answers this at all is ready to render.
+        return _respond(start_response, HTTPStatus.OK, b"ok")
+    if path == "/frame":
+        return _frame(environ, start_response)
+    return _respond(start_response, HTTPStatus.NOT_FOUND, f"no such endpoint: {path}".encode())
 
 
-def _pin_to_gpu(node: Path) -> list[str]:
-    """A command prefix that runs its argv seeing only `node` of the GPUs.
-
-    Chromium's Vulkan backend has no flag for picking a GPU: it takes the first
-    physical device the driver enumerates, so every worker in a fleet piles onto
-    the same card while the others idle. But NVIDIA's userspace enumerates from
-    the /dev/nvidiaN nodes, so a worker that cannot see a node does not see that
-    GPU -- and a mount namespace makes "cannot see" a per-process property.
-    Each worker therefore starts in its own namespace with /dev/null bound over
-    the nodes it is not meant to use; the bind is private, so it is invisible to
-    the rest of the container and disappears with the worker.
-
-    Needs CAP_SYS_ADMIN, which `run.sh` and the devcontainer already grant for
-    FUSE. `_pinning_works` checks before the fleet relies on it.
-    """
-    hidden = " ".join(shlex.quote(str(p)) for p in _gpu_nodes() if p != node)
-    script = f'for d in {hidden}; do mount --bind /dev/null "$d" || exit 1; done; exec "$@"'
-    return ["unshare", "--mount", "--propagation", "private", "--", "sh", "-c", script, "sh"]
-
-
-def _pinning_works(node: Path) -> bool:
-    """Probe the namespace trick once, so a fleet never half-starts on it.
-
-    Cheap (a few ms) and worth it: unshare or the bind can fail for reasons that
-    have nothing to do with this code -- no CAP_SYS_ADMIN, a hostile seccomp
-    profile, a host without util-linux -- and a fleet that discovers that N
-    times in N workers just fails to start with no explanation.
-    """
+def _frame(environ: dict, start_response: Callable) -> list[bytes]:
+    params = parse_qs(environ.get("QUERY_STRING", ""))
     try:
-        probe = subprocess.run(
-            [*_pin_to_gpu(node), "true"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=30,
-            check=False,
+        lat = _parse_float(params, "lat")
+        lon = _parse_float(params, "lon")
+        alt = _parse_float(params, "alt")
+        heading = _parse_float(params, "heading", default=0.0)
+        tilt = _parse_float(params, "tilt", default=45.0)
+    except ValueError as e:
+        return _respond(start_response, HTTPStatus.BAD_REQUEST, str(e).encode())
+
+    assert _session is not None  # post_fork ran before this worker started accepting
+    try:
+        jpeg_bytes = _session.capture_pose(
+            lat=lat,
+            lon=lon,
+            alt=alt,
+            heading=heading,
+            tilt=tilt,
+            timeout_ms=int(DEFAULT_FRAME_TIMEOUT_S * 1000),
         )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return probe.returncode == 0
-
-
-class Worker:
-    """One worker process: its own profile copy, its own port, its own browser."""
-
-    def __init__(self, index: int, profile_dir: Path, config: dict, gpu: Path | None = None):
-        self.index = index
-        self.profile_dir = profile_dir
-        self.config = config
-        self.gpu = gpu
-        self.port = _free_port()
-        self.process = self._spawn()
-
-    @property
-    def url(self) -> str:
-        return f"http://127.0.0.1:{self.port}"
-
-    def _spawn(self) -> subprocess.Popen:
-        # -m rather than the `earth` console script, so this works the same
-        # whether the parent was started as `uv run earth`, `python -m ...`, or
-        # from an installed entry point.
-        command = [
-            *(_pin_to_gpu(self.gpu) if self.gpu else []),
-            sys.executable,
-            "-m",
-            "google_earth_automated",
-            "serve",
-            "--worker",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(self.port),
-            "--width",
-            str(self.config["width"]),
-            "--height",
-            str(self.config["height"]),
-            "--frame-timeout",
-            str(self.config["frame_timeout"]),
-        ]
-        if self.config["headless"]:
-            command.append("--headless")
-        process = subprocess.Popen(
-            command,
-            env={**os.environ, "EARTH_PROFILE_DIR": str(self.profile_dir)},
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+    except RENDER_ERRORS as e:
+        print(f"frame failed: {e}", flush=True)
+        return _respond(
+            start_response, HTTPStatus.INTERNAL_SERVER_ERROR, f"frame failed: {e}".encode()
         )
-        threading.Thread(target=self._relay_output, args=(process,), daemon=True).start()
-        return process
 
-    def _relay_output(self, process: subprocess.Popen) -> None:
-        """Tag a worker's own output so N of them stay readable in one terminal."""
-        for line in process.stdout:
-            print(f"[worker {self.index}] {line.rstrip()}", flush=True)
-
-    def wait_until_ready(self, timeout_s: float) -> bool:
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            if self.process.poll() is not None:
-                return False  # died on the way up -- its own output says why
-            try:
-                with urlopen(f"{self.url}/health", timeout=5) as response:
-                    if response.status == HTTPStatus.OK:
-                        return True
-            except (URLError, HTTPError, OSError):
-                pass  # not listening yet
-            time.sleep(0.5)
-        return False
-
-    def terminate(self) -> None:
-        """Ask this worker to shut down; it closes its own browser on the way."""
-        if self.process.poll() is None:
-            self.process.terminate()
-
-    def wait_until_gone(self, deadline: float) -> None:
-        """Wait for it to go, then insist. The deadline is shared across the
-        fleet rather than per worker: shutdown.py force-exits the whole process
-        after GRACE_PERIOD_S, so N workers waited out one after another would
-        never finish cleaning up."""
-        try:
-            self.process.wait(timeout=max(0.1, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-
-    def stop(self) -> None:
-        self.terminate()
-        self.wait_until_gone(time.monotonic() + 10)
-        shutil.rmtree(self.profile_dir, ignore_errors=True)
+    return _respond(start_response, HTTPStatus.OK, jpeg_bytes, content_type="image/jpeg")
 
 
-class WorkerPool:
-    """The fleet, and which of its workers are free.
-
-    A worker handles one frame at a time, so the pool hands each request an idle
-    worker and takes it back afterwards; a request that finds none waits on the
-    queue, which is where backpressure comes from.
-    """
-
-    def __init__(self, root: Path, count: int, config: dict, gpus: list[Path] | None = None):
-        self.root = root
-        self.count = count
-        self.config = config
-        self.gpus = gpus or []
-        self._idle: queue.Queue[Worker] = queue.Queue()
-        self._workers: dict[int, Worker] = {}
-        self._lock = threading.Lock()
-
-    @property
-    def ready(self) -> int:
-        with self._lock:
-            return len(self._workers)
-
-    def start(self) -> None:
-        """Bring every worker up, all at once.
-
-        Concurrently, because a worker spends its startup waiting on a browser
-        launch and an import: N workers cost about as long as one, not N times.
-        """
-        results: dict[int, Worker | None] = {}
-        threads = [
-            threading.Thread(target=self._start_one, args=(i, results), daemon=True)
-            for i in range(self.count)
-        ]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-
-        for index in sorted(results):
-            worker = results[index]
-            if worker is None:
-                continue
-            with self._lock:
-                self._workers[index] = worker
-            self._idle.put(worker)
-
-        if not self._workers:
-            raise RuntimeError("no worker came up -- see the worker output above")
-        if len(self._workers) < self.count:
-            print(
-                f"warning: only {len(self._workers)}/{self.count} workers came up",
-                flush=True,
-            )
-
-    def _start_one(self, index: int, results: dict) -> None:
-        # The copy belongs to bringing a worker up, not to starting the fleet:
-        # a retired worker takes its copy with it (Worker.stop), so a
-        # replacement needs a fresh one or it would launch on an empty profile
-        # and be turned away at the login check.
-        profile_dir = self.root / f"profile-{index}"
-        shutil.rmtree(profile_dir, ignore_errors=True)
-        copy_profile(profile_dir)
-        # Round-robin by index, so a restarted worker returns to the same GPU
-        # and the fleet stays evenly spread however often it is rebuilt.
-        gpu = self.gpus[index % len(self.gpus)] if self.gpus else None
-        worker = Worker(index, profile_dir, self.config, gpu)
-        if worker.wait_until_ready(WORKER_STARTUP_TIMEOUT_S):
-            results[index] = worker
-        else:
-            worker.stop()
-            results[index] = None
-
-    def acquire(self, timeout_s: float) -> Worker | None:
-        try:
-            return self._idle.get(timeout=timeout_s)
-        except queue.Empty:
-            return None
-
-    def release(self, worker: Worker) -> None:
-        self._idle.put(worker)
-
-    def replace(self, worker: Worker) -> None:
-        """Retire a worker that stopped answering and bring up a fresh one.
-
-        A wedged or crashed browser is a worker-shaped problem, not a fleet-shaped
-        one: the others keep serving while this one is rebuilt in the background,
-        and it rejoins the pool only once its /health answers.
-        """
-        with self._lock:
-            self._workers.pop(worker.index, None)
-        worker.stop()
-        print(f"[worker {worker.index}] stopped answering -- restarting it", flush=True)
-        threading.Thread(target=self._restart, args=(worker.index,), daemon=True).start()
-
-    def _restart(self, index: int) -> None:
-        results: dict[int, Worker | None] = {}
-        self._start_one(index, results)
-        replacement = results.get(index)
-        if replacement is None:
-            print(f"[worker {index}] could not be restarted", flush=True)
-            return
-        with self._lock:
-            self._workers[index] = replacement
-        self._idle.put(replacement)
-        print(f"[worker {index}] back in the pool", flush=True)
-
-    def close(self) -> None:
-        """Take the whole fleet down, fast enough to still tidy up afterwards.
-
-        Everyone is signalled first and waited for second, against one shared
-        deadline -- terminating and waiting worker by worker takes longer than
-        the grace period a Ctrl-C or `docker stop` allows, and the caller would
-        then be killed before it could delete the profile copies.
-        """
-        with self._lock:
-            workers = list(self._workers.values())
-            self._workers.clear()
-        for worker in workers:
-            worker.terminate()
-        deadline = time.monotonic() + FLEET_SHUTDOWN_S
-        for worker in workers:
-            worker.wait_until_gone(deadline)
-
-
-class _DispatchHandler(BaseHTTPRequestHandler):
-    pool: WorkerPool
-    frame_timeout_s: float
-
-    def log_message(self, log_format: str, *args) -> None:
-        print(f"{self.address_string()} - {log_format % args}", flush=True)
-
-    def do_GET(self) -> None:
-        path = urlsplit(self.path).path
-        if path == "/health":
-            ready = self.pool.ready
-            status = HTTPStatus.OK if ready else HTTPStatus.SERVICE_UNAVAILABLE
-            self._respond(status, f"ok - {ready}/{self.pool.count} workers ready".encode())
-        elif path == "/frame":
-            self._dispatch_frame()
-        else:
-            self._respond(HTTPStatus.NOT_FOUND, f"no such endpoint: {path}".encode())
-
-    def _dispatch_frame(self) -> None:
-        worker = self.pool.acquire(WORKER_WAIT_TIMEOUT_S)
-        if worker is None:
-            self._respond(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                f"all {self.pool.count} workers busy for {WORKER_WAIT_TIMEOUT_S:.0f}s".encode(),
-            )
-            return
-
-        try:
-            # A little longer than the worker's own frame timeout, so a slow
-            # frame times out where it can say what went wrong rather than here.
-            with urlopen(f"{worker.url}{self.path}", timeout=self.frame_timeout_s + 30) as response:
-                body = response.read()
-                content_type = response.headers.get("Content-Type", "image/jpeg")
-            self._respond(HTTPStatus.OK, body, content_type=content_type)
-            self.pool.release(worker)
-        except HTTPError as e:
-            # The worker answered, it just said no (a bad pose, a failed frame):
-            # pass its own status and message through, and keep the worker.
-            self._respond(HTTPStatus(e.code), e.read(), content_type="text/plain; charset=utf-8")
-            self.pool.release(worker)
-        except (URLError, OSError) as e:
-            # The worker did not answer at all -- that one is gone, not the frame.
-            self.pool.replace(worker)
-            self._respond(HTTPStatus.BAD_GATEWAY, f"worker {worker.index} failed: {e}".encode())
-
-    def _respond(
-        self, status: HTTPStatus, body: bytes, *, content_type: str = "text/plain; charset=utf-8"
-    ) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-
-def _fleet_gpus(workers: int) -> list[Path]:
-    """The GPUs worth spreading `workers` over, or [] to leave them unpinned.
-
-    Nothing to gain from pinning a fleet that has one GPU to choose from, or
-    fewer workers than GPUs would each get one -- and every case that opts out
-    here is the old, unpinned behaviour, unchanged.
-    """
-    nodes = _gpu_nodes()
-    if len(nodes) < 2 or workers < 2:
-        return []
-    if not _pinning_works(nodes[0]):
-        print(
-            "warning: cannot pin workers to GPUs (needs CAP_SYS_ADMIN) -- "
-            f"all {workers} workers will share one of the {len(nodes)} GPUs",
-            flush=True,
-        )
-        return []
-    return nodes
-
-
-def _serve_fleet(
+def _respond(
+    start_response: Callable,
+    status: HTTPStatus,
+    body: bytes,
     *,
-    host: str,
-    port: int,
-    workers: int,
-    headless: bool,
-    width: int,
-    height: int,
-    frame_timeout: float,
-) -> None:
-    root = Path(tempfile.mkdtemp(prefix="earth-serve-"))
-    config = {
-        "headless": headless,
-        "width": width,
-        "height": height,
-        "frame_timeout": frame_timeout,
-    }
-    gpus = _fleet_gpus(workers)
-    pool = WorkerPool(root, workers, config, gpus)
-    try:
-        spread = f" across {len(gpus)} GPUs" if gpus else ""
-        print(
-            f"Starting {workers} worker(s){spread}, each on its own copy of the profile...",
-            flush=True,
-        )
-        pool.start()
+    content_type: str = "text/plain; charset=utf-8",
+) -> list[bytes]:
+    start_response(
+        f"{status.value} {status.phrase}",
+        [("Content-Type", content_type), ("Content-Length", str(len(body)))],
+    )
+    return [body]
 
-        _DispatchHandler.pool = pool
-        _DispatchHandler.frame_timeout_s = frame_timeout
-        with ThreadingHTTPServer((host, port), _DispatchHandler) as server:
-            print(
-                f"Listening on http://{host}:{port} -- "
-                "GET /frame?lat=..&lon=..&alt=..&heading=..&tilt=.. "
-                f"({width}x{height}, {pool.ready} worker(s))",
-                flush=True,
-            )
-            try:
-                server.serve_forever()
-            except KeyboardInterrupt:
-                pass  # the signal handler already said so
-    finally:
-        pool.close()
-        shutil.rmtree(root, ignore_errors=True)
-        print("Server stopped.", flush=True)
+
+# --- the worker lifecycle, as gunicorn hooks ----------------------------------
+
+
+def pre_fork(server: Arbiter, worker: object) -> None:
+    """Number the worker about to be forked, in the arbiter, where the number
+    outlives it.
+
+    gunicorn identifies a worker by pid and by an ever-increasing age, neither of
+    which a respawn preserves -- but a replacement has to come back to the same
+    GPU, or a fleet that is rebuilt often slowly bunches up on one card. So each
+    worker takes the lowest slot no live worker holds, and a dead worker's slot
+    is free again by the time its replacement is forked.
+    """
+    taken = {getattr(w, "earth_slot", -1) for w in server.WORKERS.values()}
+    worker.earth_slot = next(i for i in count() if i not in taken)
+
+
+def post_fork(server: Arbiter, worker: object) -> None:
+    """Turn a freshly forked worker into a warm, logged-in browser.
+
+    Everything expensive happens here, once per worker: the profile copy, the
+    GPU pin, the browser launch, the project import. gunicorn only starts the
+    worker's accept loop once this returns, so a request can never land on a
+    half-built worker.
+    """
+    # The arbiter's SIGCHLD handler came across the fork and would reap this
+    # worker's own children -- the mount helpers pin_to_gpu runs, Playwright's
+    # node driver -- out from under it. gunicorn resets it in init_process(),
+    # which runs after this hook, so it has to go now.
+    signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+
+    profile = _profile_root / f"profile-{worker.earth_slot}"
+    # A worker killed outright (a browser still wedged past WORKER_TIMEOUT_S)
+    # never got to run worker_exit, so its slot's copy may still be lying about.
+    shutil.rmtree(profile, ignore_errors=True)
+    copy_profile(profile)
+    worker.earth_profile = profile
+
+    if _gpus:
+        # Round-robin by slot, so the fleet stays evenly spread however often it
+        # is rebuilt.
+        pin_to_gpu(_gpus[worker.earth_slot % len(_gpus)])
+
+    # An ExitStack rather than a `with`: the browser has to outlive this hook and
+    # be closed by a different one (worker_exit), and the stack is what carries
+    # the context-manager protocol across that gap.
+    global _session
+    stack = ExitStack()
+    worker.earth_stack = stack
+    try:
+        playwright = stack.enter_context(sync_playwright())
+        _session = stack.enter_context(Session(playwright, profile_dir=profile, headless=True))
+        print(f"Loading a {FRAME_WIDTH}x{FRAME_HEIGHT} project...", flush=True)
+        load_project(_session)
+    except NotLoggedInError as e:
+        stack.close()
+        print(f"error: {e}", file=sys.stderr, flush=True)
+        # The one exit code the arbiter reads as "stop the whole fleet". Any
+        # other, and it would respawn this worker forever against a login that
+        # is not coming back.
+        sys.exit(Arbiter.WORKER_BOOT_ERROR)
+    except BaseException:  # including KeyboardInterrupt during the browser launch
+        stack.close()
+        raise
+
+
+def worker_exit(server: Arbiter, worker: object) -> None:
+    """Close this worker's browser and delete the profile copy it ran on.
+
+    Runs in the worker, from gunicorn's own `finally`, so it covers a graceful
+    stop, a crash, and the SIGABRT the arbiter sends a timed-out worker alike --
+    everything except an outright SIGKILL, which is what post_fork's rmtree is
+    there to clean up after.
+    """
+    stack = getattr(worker, "earth_stack", None)
+    if stack is not None:
+        stack.close()
+    profile = getattr(worker, "earth_profile", None)
+    if profile is not None:
+        shutil.rmtree(profile, ignore_errors=True)
+
+
+def when_ready(server: Arbiter) -> None:
+    print(
+        "GET /frame?lat=..&lon=..&alt=..&heading=..&tilt=.. "
+        f"({FRAME_WIDTH}x{FRAME_HEIGHT}, {server.cfg.workers} worker(s))",
+        flush=True,
+    )
+
+
+def on_exit(server: Arbiter) -> None:
+    # Each worker deletes its own copy on the way out; this is the backstop for
+    # the ones that were killed before they could.
+    shutil.rmtree(_profile_root, ignore_errors=True)
+    print("Server stopped.", flush=True)
+
+
+class _Fleet(BaseApplication):
+    """gunicorn as a library, configured in code rather than from a file.
+
+    Everything `earth serve` needs from a process supervisor -- forking N
+    workers, handing them one shared listening socket, restarting one that dies
+    or wedges -- is gunicorn's prefork model. The hooks above are the only part
+    of it that is specific to this app.
+    """
+
+    def __init__(self, options: dict):
+        self.options = options
+        super().__init__()
+
+    def load_config(self) -> None:
+        for key, value in self.options.items():
+            self.cfg.set(key, value)
+
+    def load(self) -> Callable:
+        return application
 
 
 def command(
@@ -727,48 +372,38 @@ def command(
             help=(
                 "How many browsers to answer requests with, each on its own copy of the "
                 "login profile. Scales linearly to about 4; past that Google's map-tile "
-                "streaming, not this machine, is the limit -- see serve.py's docstring."
+                "streaming, not this machine, is the limit -- see docs/performance.md."
             ),
         ),
     ] = 1,
-    headless: Annotated[
-        bool,
-        typer.Option(
-            help="Run the browser headless (default: headed, until selectors are verified)."
-        ),
-    ] = False,
-    width: Annotated[int, typer.Option(help="Frame width in pixels, for every frame.")] = 1920,
-    height: Annotated[int, typer.Option(help="Frame height in pixels, for every frame.")] = 1080,
-    frame_timeout: Annotated[
-        float, typer.Option(help="How long one frame may take, in seconds.")
-    ] = DEFAULT_FRAME_TIMEOUT_S,
-    worker: Annotated[
-        bool,
-        typer.Option(
-            "--worker",
-            hidden=True,
-            help="Internal: run as one worker of a fleet, on the profile in EARTH_PROFILE_DIR.",
-        ),
-    ] = False,
 ) -> None:
     """Serve single Earth Studio frames over HTTP from a pool of warm browsers."""
-    if worker:
-        _serve_worker(
-            host=host,
-            port=port,
-            headless=headless,
-            width=width,
-            height=height,
-            frame_timeout=frame_timeout,
-        )
-        return
+    global _profile_root, _gpus
+    _profile_root = Path(tempfile.mkdtemp(prefix="earth-serve-"))
+    _gpus = fleet_gpus(workers)
 
-    _serve_fleet(
-        host=host,
-        port=port,
-        workers=workers,
-        headless=headless,
-        width=width,
-        height=height,
-        frame_timeout=frame_timeout,
+    spread = f" across {len(_gpus)} GPUs" if _gpus else ""
+    print(
+        f"Starting {workers} worker(s){spread}, each on its own copy of the profile...",
+        flush=True,
     )
+
+    # From here on the arbiter owns SIGINT/SIGTERM -- it installs its own
+    # handlers over shutdown.py's, and takes the fleet down through worker_exit
+    # instead. Everything shutdown.py guards against still applies inside a
+    # worker, which is why the browser is closed from a context manager there.
+    _Fleet(
+        {
+            "bind": f"{host}:{port}",
+            "workers": workers,
+            "timeout": int(WORKER_TIMEOUT_S),
+            # Deliberately no max_requests: recycling a worker would throw away
+            # the warm browser that makes this server fast.
+            "accesslog": "-",
+            "pre_fork": pre_fork,
+            "post_fork": post_fork,
+            "worker_exit": worker_exit,
+            "when_ready": when_ready,
+            "on_exit": on_exit,
+        }
+    ).run()

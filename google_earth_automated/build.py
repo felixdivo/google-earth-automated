@@ -16,6 +16,8 @@ from typing import Annotated
 
 import typer
 
+from . import REPO_ROOT
+
 EARTH_RADIUS_M = 6371000.0
 
 LON_RANGE = (-180.0, 180.0)
@@ -388,7 +390,7 @@ def command(
     ] = None,
 ) -> None:
     """Generate a Google Earth Studio .esp project that orbits a point of interest."""
-    output_path = output or Path(f"out/{name}.esp")
+    output_path = output or REPO_ROOT / "out" / f"{name}.esp"
 
     target = {"lat": lat, "lon": lon, "alt_m": ground_alt}
 
