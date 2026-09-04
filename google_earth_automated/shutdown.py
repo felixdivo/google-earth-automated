@@ -45,7 +45,14 @@ _interrupted = False
 
 
 def _descendants(pid: int) -> Iterator[int]:
-    """Every process below pid, children before parents."""
+    """Every process below pid, children before parents.
+
+    Not os.killpg(): that needs os.setsid(), and a session leader no longer
+    receives Ctrl-C from the terminal's foreground group -- which is the one
+    thing this module exists to handle. It would also miss any descendant
+    that starts a session of its own, silently restoring the leak this walk
+    was written to fix.
+    """
     try:
         with open(f"/proc/{pid}/task/{pid}/children") as f:
             children = f.read().split()

@@ -7,10 +7,12 @@ Sequence of JPEGs -- there is no PNG or Cloud-free option), grants it
 render, and waits for frames to show up in that directory. Encoding the
 sequence into a video is a separate, later step -- not done here.
 
-Requires a logged-in session -- run `earth login` first.
+Requires a logged-in session -- run `earth login` first. Always runs headed
+(on the virtual display) -- select_output_folder() below drives Chromium's
+native folder picker with xdotool, which does not exist in headless Chromium.
 
     uv run earth render frankfurt_hauptbahnhof_orbit.esp
-    uv run earth render frankfurt_hauptbahnhof_orbit.esp --output-dir out/ --headless
+    uv run earth render frankfurt_hauptbahnhof_orbit.esp --output-dir out/
 
 Local Image Sequence rendering grants filesystem access via the browser's
 File System Access API (window.showDirectoryPicker()), which Chromium serves
@@ -106,35 +108,6 @@ CAMERA_GROUP_TITLES = ("Camera Position", "Camera Rotation")
 # Title of the Chrome-for-Testing window, for aiming keyboard input at the
 # native File System Access prompts (which carry no window title of their own).
 BROWSER_WINDOW_TITLE = "Google Earth Studio"
-
-RENDER_TIMEOUT_MS = (
-    3 * 60 * 60 * 1000
-)  # SwiftShader software rendering (no real GPU here) is slow -- give it room
-
-# Upper bound on how long an import may take to show up in the editor, and the
-# blind wait wait_for_project_loaded() falls back to when it never does.
-PROJECT_LOAD_WAIT_MS = 8000  # importing a project re-renders the whole scene
-# Breathing room after the imported project's name appears, before touching the
-# Render button. The name can land while the SPA is still rebuilding around it,
-# and RENDER_BUTTON is present in the toolbar the whole time -- so Playwright's
-# own actionability wait offers no protection against clicking too early.
-#
-# 6s, not the 1500ms this started as, because Earth Studio streams its imagery
-# in asynchronously and offers no "finished streaming" signal: the name appears
-# long before the terrain has resolved, and rendering then produces a visibly
-# coarser frame. Measured by rendering the same 10-frame project three ways and
-# comparing pixels. Two runs of the unchanged code differ from each other by
-# 0.05-0.11% of pixels (imagery tiles load slightly differently every time),
-# which sets the noise floor. At 1500ms this code differed from that baseline by
-# 3.2-8.0% -- 50-80x the floor, i.e. really rendering less detail. At 6000ms it
-# is back to 0.06-0.10%, inside the floor.
-#
-# So most of what the project-name signal saves has to be given back to keep the
-# output right: the whole wait lands near 6.7s against the 8s blind sleep it
-# replaced. It is still the better shape -- a scene that settles quickly is no
-# longer charged the full 8s -- but it is worth ~1.3s, not the ~6s it looks like
-# with a short settle. Re-tune with the same pixel comparison, never by eye.
-SCENE_SETTLE_MS = 6000
 
 
 def _xdotool(*args: str) -> str:
@@ -262,20 +235,52 @@ def project_name_visible(page: Page, project_name: str) -> bool:
         return False
 
 
+# Upper bound on how long an import may take to show up in the editor, and the
+# blind wait wait_for_project_loaded() falls back to when it never does.
+PROJECT_LOAD_WAIT_MS = 8000  # importing a project re-renders the whole scene
+# Breathing room after the imported project's name appears, before the caller
+# starts working with the loaded scene -- clicking Render in `earth render`'s
+# flow, or, for `earth serve`, posing the camera against the worker's warmup
+# import. The name can land while the SPA is still rebuilding around it, and
+# both RENDER_BUTTON and the camera fields are present in the DOM the whole
+# time -- so Playwright's own actionability wait offers no protection against
+# acting too early.
+#
+# 6s, not the 1500ms this started as, because Earth Studio streams its imagery
+# in asynchronously and offers no "finished streaming" signal: the name appears
+# long before the terrain has resolved, and rendering then produces a visibly
+# coarser frame. Measured by rendering the same 10-frame project three ways and
+# comparing pixels. Two runs of the unchanged code differ from each other by
+# 0.05-0.11% of pixels (imagery tiles load slightly differently every time),
+# which sets the noise floor. At 1500ms this code differed from that baseline by
+# 3.2-8.0% -- 50-80x the floor, i.e. really rendering less detail. At 6000ms it
+# is back to 0.06-0.10%, inside the floor.
+#
+# So most of what the project-name signal saves has to be given back to keep the
+# output right: the whole wait lands near 6.7s against the 8s blind sleep it
+# replaced. It is still the better shape -- a scene that settles quickly is no
+# longer charged the full 8s -- but it is worth ~1.3s, not the ~6s it looks like
+# with a short settle. Re-tune with the same pixel comparison, never by eye.
+SCENE_SETTLE_MS = 6000
+
+
 def wait_for_project_loaded(
     page: Page, project_name: str | None, *, timeout_ms: int = PROJECT_LOAD_WAIT_MS
 ) -> None:
     """Wait for a just-imported project to appear in the editor.
 
     Importing re-renders the whole scene and Earth Studio fires no load event,
-    so this used to be a blind sleep of the full timeout on every render --
-    the single largest avoidable cost in `earth serve`'s per-request path. The
+    so this used to be a blind sleep of the full timeout on every import. The
     project's own name showing up is the earliest signal that the import
-    landed: `earth serve` names every per-request project uniquely (frame_0,
-    frame_1, ...), so it is a fresh name each time.
+    landed, which is what this replaces the blind sleep with wherever
+    import_project() runs: every `earth render` (a fresh import each time) and
+    once per `earth serve` worker, at startup, when it loads its scratch
+    project (see serve.load_project()). `earth serve` never imports again
+    after that, so this wait is off its per-request path entirely -- a request
+    there only moves the camera and takes a snapshot.
 
     project_name is None when the caller found that name already on screen
-    before importing (see Session.render_esp) -- then its presence proves
+    before importing (see Session.import_project) -- then its presence proves
     nothing and only the blind wait is left. Same fallback if the name never
     shows: a UI change costs the old behaviour, not a broken render.
 
@@ -295,19 +300,14 @@ def wait_for_project_loaded(
     page.wait_for_timeout(SCENE_SETTLE_MS)
 
 
-# How long one camera field gets to accept a value and show it back. These are
-# on-screen widgets in an already-loaded editor, so this covers a slow frame,
-# not a load -- Playwright's 30s default would turn a moved selector into a
-# half-minute hang per request.
+# How long one camera field gets to accept a value and show it back. Shared
+# across every UI action that touches the camera panel or the snapshot button
+# -- expanding a group, typing a field, reading one back, clicking snapshot --
+# so it lives here rather than at each call site. These are on-screen widgets
+# in an already-loaded editor, so this covers a slow frame, not a load --
+# Playwright's 30s default would turn a moved selector into a half-minute hang
+# per request.
 POSE_FIELD_TIMEOUT_MS = 3000
-# How long the editor gets to reappear once the render panel is dismissed.
-# Generous because it is only ever waited out when something is wrong: the panel
-# normally goes in well under a second.
-EDITOR_RETURN_TIMEOUT_MS = 10000
-# How long a snapshot may take to arrive. Measured at 0.4-4.1s depending on how
-# much of the scene is already resident, so this is an outer bound on a slow
-# scene rather than a number anything normally waits out.
-SNAPSHOT_TIMEOUT_MS = 120000
 
 
 def _expand_camera_groups(page: Page) -> None:
@@ -432,12 +432,6 @@ def _frames_on_disk(output_dir: Path) -> int:
     return len(list(output_dir.rglob("*.jpg"))) + len(list(output_dir.rglob("*.jpeg")))
 
 
-# Where the grant button ("Allow" / "Save changes") sits when the browser fills
-# the 1280x800 virtual display -- both prompts anchor just under the omnibox and
-# their grant buttons overlap around this point. Used only as a fallback.
-_GRANT_BUTTON_XY = ("780", "130")
-
-
 def _accept_native_prompt(window_id: str | None, *, click_fallback: bool) -> None:
     """Accept a native File System Access prompt. Focus defaults to the deny
     button; one Tab reaches the grant button ("Allow" / "Save changes"), Enter
@@ -458,7 +452,12 @@ def _accept_native_prompt(window_id: str | None, *, click_fallback: bool) -> Non
     _xdotool("key", "--clearmodifiers", "Return")
     time.sleep(0.6)
     if click_fallback:
-        _xdotool("mousemove", *_GRANT_BUTTON_XY, "click", "1")
+        # Where the grant button ("Allow" / "Save changes") sits when the
+        # browser fills the 1280x800 virtual display -- both prompts anchor
+        # just under the omnibox and their grant buttons overlap around this
+        # point.
+        grant_button_xy = ("780", "130")
+        _xdotool("mousemove", *grant_button_xy, "click", "1")
         time.sleep(0.6)
     time.sleep(0.6)
 
@@ -561,8 +560,11 @@ def _close_render_panel(page: Page) -> None:
     with suppress(PlaywrightError):
         page.keyboard.press("Escape")
     with suppress(PlaywrightError):
+        # Generous because it is only ever waited out when something is wrong:
+        # the panel normally goes in well under a second.
+        editor_return_timeout_ms = 10000
         page.locator(CAMERA_ATTRIBUTE.format(attr=POSE_ATTRIBUTES[0][0])).first.wait_for(
-            state="visible", timeout=EDITOR_RETURN_TIMEOUT_MS
+            state="visible", timeout=editor_return_timeout_ms
         )
 
 
@@ -644,6 +646,15 @@ def validate_esp_file(esp_file: Path) -> dict:
         return json.loads(esp_file.read_text())
     except json.JSONDecodeError as e:
         raise ValueError(f"{esp_file} is not valid JSON: {e}") from e
+
+
+# How long a snapshot may take to arrive. Measured at 0.4-4.1s depending on how
+# much of the scene is already resident, so this is an outer bound on a slow
+# scene rather than a number anything normally waits out.
+SNAPSHOT_TIMEOUT_MS = 120000
+# Outer bound on a whole `earth render` render. SwiftShader software rendering
+# (no real GPU here) is slow -- give it room.
+RENDER_TIMEOUT_MS = 3 * 60 * 60 * 1000
 
 
 class Session:
@@ -814,10 +825,11 @@ class Session:
         close_quietly(self.context)
 
 
-def render(
-    esp_file: Path, output_dir: Path, *, headless: bool, expected_frame_count: int | None
-) -> None:
-    with sync_playwright() as playwright, Session(playwright, headless=headless) as session:
+def render(esp_file: Path, output_dir: Path, *, expected_frame_count: int | None) -> None:
+    # Always headed: select_output_folder() drives Chromium's native File
+    # System Access folder picker with xdotool, which does not exist in
+    # headless Chromium -- a first run headless always fails there.
+    with sync_playwright() as playwright, Session(playwright) as session:
         session.render_esp(
             esp_file,
             output_dir,
@@ -841,18 +853,6 @@ def command(
             ),
         ),
     ] = DEFAULT_OUTPUT_DIR,
-    headless: Annotated[
-        bool,
-        typer.Option(
-            help="Run the browser headless (default: headed, until selectors are verified)."
-        ),
-    ] = False,
-    dry_run: Annotated[
-        bool,
-        typer.Option(
-            help="Validate the .esp file and print the planned actions without a browser."
-        ),
-    ] = False,
 ) -> None:
     """Render an Earth Studio .esp project to a JPEG image sequence."""
     try:
@@ -869,17 +869,10 @@ def command(
     # browser mid-write, losing the final frame.
     expected_frame_count = duration + 1 if duration is not None else None
 
-    if dry_run:
-        print(f"Would import {esp_file} into Earth Studio")
-        print("Would set render format to Image sequence (.jpeg)")
-        print(f"Would render frames directly into {output_dir}/")
-        return
-
     try:
         render(
             esp_file,
             output_dir,
-            headless=headless,
             expected_frame_count=expected_frame_count,
         )
     except NotLoggedInError as e:
