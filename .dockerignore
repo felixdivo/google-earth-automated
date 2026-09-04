@@ -7,5 +7,4 @@ out
 *.esp
 __pycache__/
 .ruff_cache/
-.claude
 *.egg-info/

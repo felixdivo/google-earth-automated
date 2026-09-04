@@ -39,11 +39,6 @@
       "type": "volume"
     }
   ],
-  // The claude-data volume starts empty on first mount (Docker only seeds a
-  // new volume from the image, not from a live container), so restore the
-  // one-time stash left in the (already-persistent) uv-cache volume the
-  // first time this fires.
-  "postCreateCommand": "if [ ! -e /root/.claude/projects ] && [ -d /root/.cache/uv/claude-backup ]; then cp -a /root/.cache/uv/claude-backup/. /root/.claude/; fi",
   // Same services script the ./run.sh entrypoint runs.
   "postStartCommand": "sh docker/services.sh",
   "forwardPorts": [6080, 8000],

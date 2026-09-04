@@ -16,13 +16,11 @@
 # Harmless when called from the long-lived entrypoint.
 set -e
 
-if ! pgrep -f "Xvfb :99" >/dev/null 2>&1; then
-    setsid Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 </dev/null &
-fi
-sleep 1
-
-if ! pgrep -f "x11vnc -display :99" >/dev/null 2>&1; then
-    setsid x11vnc -display :99 -forever -shared -nopw -quiet >/tmp/x11vnc.log 2>&1 </dev/null &
+# TigerVNC's Xvnc is an X server with the VNC server built in, so one process
+# covers what Xvfb + x11vnc used to do as two.
+if ! pgrep -f "Xvnc :99" >/dev/null 2>&1; then
+    setsid Xvnc :99 -geometry 1280x800 -depth 24 -SecurityTypes None -AlwaysShared -rfbport 5900 \
+        >/tmp/xvnc.log 2>&1 </dev/null &
 fi
 sleep 1
 
